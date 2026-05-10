@@ -219,6 +219,25 @@ impl ZoteroClient {
         self.get_json(&url)
     }
 
+    /* GET /items?itemKey=...&format=bib&style=<csl_style>. Zotero renders
+    the bibliography against the named CSL style and returns an HTML string
+    (a `<div class="csl-bib-body">...</div>` wrapper around per-entry
+    `<div class="csl-entry">` blocks). The style name is whatever Zotero
+    has installed locally -- common choices: "apa", "ieee",
+    "chicago-author-date", "modern-language-association". */
+    pub fn render_citation(&self, keys: &[String], style: &str) -> Result<String> {
+        let lib = self.lib_path();
+        let joined = keys.join(",");
+        let url = format!(
+            "{}{}/items?itemKey={}&format=bib&style={}&v={API_VERSION}",
+            self.base,
+            lib,
+            encode(&joined),
+            encode(style)
+        );
+        self.get_json(&url)
+    }
+
     /* ------------------------------------------------------------------ */
     /*  Collections                                                         */
     /* ------------------------------------------------------------------ */
