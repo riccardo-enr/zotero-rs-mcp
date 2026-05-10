@@ -542,4 +542,97 @@ mod tests {
         assert_eq!(a.keys, vec!["AAA".to_string(), "BBB".to_string()]);
         assert_eq!(a.format.as_str(), "bibtex");
     }
+
+    /* annotations / notes ------------------------------------------- */
+
+    fn sample_children() -> Vec<serde_json::Value> {
+        serde_json::json!([
+            {
+                "key": "ANN1KEY1",
+                "data": {
+                    "itemType": "annotation",
+                    "parentItem": "PARENT01",
+                    "annotationType": "highlight",
+                    "annotationText": "key insight",
+                    "annotationComment": "important",
+                    "annotationPageLabel": "12",
+                    "annotationColor": "#ffd400"
+                }
+            },
+            {
+                "key": "ANN2KEY2",
+                "data": {
+                    "itemType": "annotation",
+                    "parentItem": "PARENT01",
+                    "annotationType": "note",
+                    "annotationComment": "margin remark",
+                    "annotationPageLabel": "13",
+                    "annotationColor": "#5fb236"
+                }
+            },
+            {
+                "key": "NOTE1KEY",
+                "data": {
+                    "itemType": "note",
+                    "parentItem": "PARENT01",
+                    "note": "<p>standalone child note</p>"
+                }
+            },
+            {
+                "key": "ATTACHKY",
+                "data": {
+                    "itemType": "attachment",
+                    "parentItem": "PARENT01",
+                    "contentType": "application/pdf",
+                    "filename": "paper.pdf"
+                }
+            }
+        ])
+        .as_array()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn compact_annotations_filters_and_shapes() {
+        let children = sample_children();
+        let out = filter_annotations(&children);
+        assert_eq!(out.len(), 2);
+
+        let a = &out[0];
+        assert_eq!(a["key"], "ANN1KEY1");
+        assert_eq!(a["type"], "highlight");
+        assert_eq!(a["text"], "key insight");
+        assert_eq!(a["comment"], "important");
+        assert_eq!(a["page_label"], "12");
+        assert_eq!(a["color"], "#ffd400");
+
+        let b = &out[1];
+        assert_eq!(b["key"], "ANN2KEY2");
+        assert_eq!(b["type"], "note");
+        /* annotation with no annotationText still produces an entry */
+        assert!(b.get("text").is_some());
+        assert_eq!(b["comment"], "margin remark");
+    }
+
+    #[test]
+    fn compact_notes_filters_and_shapes() {
+        let children = sample_children();
+        let out = filter_notes(&children);
+        assert_eq!(out.len(), 1);
+        let n = &out[0];
+        assert_eq!(n["key"], "NOTE1KEY");
+        assert_eq!(n["note"], "<p>standalone child note</p>");
+        assert_eq!(n["parent_item"], "PARENT01");
+    }
+
+    #[test]
+    fn compact_annotations_skips_non_annotations() {
+        let children = sample_children();
+        let out = filter_annotations(&children);
+        for entry in &out {
+            assert_ne!(entry["key"], "NOTE1KEY");
+            assert_ne!(entry["key"], "ATTACHKY");
+        }
+    }
 }
