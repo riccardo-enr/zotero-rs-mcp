@@ -1350,6 +1350,27 @@ mod tests {
     }
 
     #[test]
+    fn render_citation_args_default_style_is_ieee() {
+        let a: RenderCitationArgs =
+            serde_json::from_value(json!({"keys": ["ABC"]})).unwrap();
+        assert_eq!(a.style, "ieee");
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn render_citation_args_full_payload() {
+        let a: RenderCitationArgs = serde_json::from_value(json!({
+            "keys": ["ABC", "DEF"],
+            "style": "apa",
+            "library": {"type": "group", "id": 1},
+        }))
+        .unwrap();
+        assert_eq!(a.keys, vec!["ABC".to_string(), "DEF".to_string()]);
+        assert_eq!(a.style, "apa");
+        assert!(a.library.is_some());
+    }
+
+    #[test]
     fn trash_list_args_compact_default_is_true() {
         let a: TrashListArgs = serde_json::from_value(json!({})).unwrap();
         assert!(a.compact);
