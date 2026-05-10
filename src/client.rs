@@ -13,11 +13,42 @@ Uses a synchronous HTTP client (minreq) — each CLI invocation makes exactly
 one request to localhost so async provides no benefit and only adds runtime
 cold-start overhead. minreq without TLS keeps the dependency tree minimal. */
 
+#[derive(Clone)]
 pub struct ZoteroClient {
     base: String,
     api_key: Option<String>,
     user_id: Option<u64>,
     library_type: String,
+}
+
+/* Per-call override for which Zotero library a tool targets. Mirrors the
+two URL forms the API accepts: /users/<id> and /groups/<id>. id=0 is the
+local logged-in user alias, matching the existing config-default behavior. */
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryKind {
+    User,
+    Group,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+pub struct LibraryRef {
+    #[serde(rename = "type")]
+    pub kind: LibraryKind,
+    pub id: u64,
+}
+
+impl LibraryKind {
+    fn as_config_str(self) -> &'static str {
+        match self {
+            LibraryKind::User => "user",
+            LibraryKind::Group => "group",
+        }
+    }
 }
 
 impl ZoteroClient {
@@ -88,6 +119,17 @@ impl ZoteroClient {
             );
         }
         Ok(resp.as_str().context("reading response body")?.to_string())
+    }
+
+    /* Return a clone of this client targeting a different library. The
+    underlying HTTP client is stateless, so the per-call override is just
+    a swap of the user_id + library_type fields. Tool handlers branch once
+    on the optional `library` arg and call methods on the resulting client. */
+    pub fn with_library(&self, lib: LibraryRef) -> Self {
+        let mut c = self.clone();
+        c.user_id = Some(lib.id);
+        c.library_type = lib.kind.as_config_str().to_string();
+        c
     }
 
     /* Build the library-scoped path prefix, e.g. /users/123 or /groups/456 */
@@ -307,5 +349,69 @@ fn pluralise(s: &str) -> &str {
         "user" => "users",
         "group" => "groups",
         _ => s,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client(library_type: &str, user_id: Option<u64>) -> ZoteroClient {
+        ZoteroClient {
+            base: "http://localhost:23119/api".into(),
+            api_key: None,
+            user_id,
+            library_type: library_type.into(),
+        }
+    }
+
+    #[test]
+    fn lib_path_default_is_local_user() {
+        let c = test_client("user", None);
+        assert_eq!(c.lib_path(), "/users/0");
+    }
+
+    #[test]
+    fn lib_path_with_configured_user() {
+        let c = test_client("user", Some(123));
+        assert_eq!(c.lib_path(), "/users/123");
+    }
+
+    #[test]
+    fn with_library_overrides_to_group() {
+        let c = test_client("user", Some(1));
+        let g = c.with_library(LibraryRef {
+            kind: LibraryKind::Group,
+            id: 42,
+        });
+        assert_eq!(g.lib_path(), "/groups/42");
+        // Original is unchanged.
+        assert_eq!(c.lib_path(), "/users/1");
+    }
+
+    #[test]
+    fn with_library_overrides_to_other_user() {
+        let c = test_client("group", Some(99));
+        let u = c.with_library(LibraryRef {
+            kind: LibraryKind::User,
+            id: 7,
+        });
+        assert_eq!(u.lib_path(), "/users/7");
+    }
+
+    #[test]
+    fn library_ref_serde_round_trip() {
+        let json = r#"{"type":"group","id":42}"#;
+        let parsed: LibraryRef = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.kind, LibraryKind::Group);
+        assert_eq!(parsed.id, 42);
+        let back = serde_json::to_value(parsed).unwrap();
+        assert_eq!(back, serde_json::json!({"type": "group", "id": 42}));
+    }
+
+    #[test]
+    fn library_ref_rejects_unknown_kind() {
+        let json = r#"{"type":"team","id":1}"#;
+        assert!(serde_json::from_str::<LibraryRef>(json).is_err());
     }
 }
