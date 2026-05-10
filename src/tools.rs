@@ -188,6 +188,82 @@ pub enum CollectionOp {
     Remove,
 }
 
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SetTagsMode {
+    #[default]
+    Add,
+    Remove,
+    Replace,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetTagsArgs {
+    /// Zotero item key (8-character alphanumeric).
+    pub key: String,
+    /// Tag strings to add / remove / replace with. Duplicates in this list are
+    /// silently deduped (first-seen order preserved).
+    pub tags: Vec<String>,
+    /// One of: add (default) | remove | replace.
+    #[serde(default)]
+    pub mode: SetTagsMode,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+/* Pure helper: compute the next `data.tags` array for an item-tag mutation.
+Tag matching is case-sensitive (matches Zotero's native tag-store behavior).
+Returns the new list plus a `changed` flag so the caller can short-circuit
+the PATCH (and avoid bumping the item's version) on a no-op. */
+pub fn apply_tags_op(
+    current: &[String],
+    input: &[String],
+    mode: SetTagsMode,
+) -> (Vec<String>, bool) {
+    let deduped = dedup_preserve_order(input);
+    match mode {
+        SetTagsMode::Add => {
+            let mut next = current.to_vec();
+            let mut any_added = false;
+            for t in deduped {
+                if !next.iter().any(|c| c == &t) {
+                    next.push(t);
+                    any_added = true;
+                }
+            }
+            (next, any_added)
+        }
+        SetTagsMode::Remove => {
+            let to_remove = deduped;
+            let next: Vec<String> = current
+                .iter()
+                .filter(|c| !to_remove.iter().any(|t| t == *c))
+                .cloned()
+                .collect();
+            let changed = next.len() != current.len();
+            (next, changed)
+        }
+        SetTagsMode::Replace => {
+            let next = deduped;
+            let changed = next != current;
+            (next, changed)
+        }
+    }
+}
+
+fn dedup_preserve_order(input: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::with_capacity(input.len());
+    for s in input {
+        if !seen.iter().any(|x| x == s) {
+            seen.push(s.clone());
+        }
+    }
+    seen
+}
+
 /* Pure helper: compute the next `data.collections` array for a single-item
 membership change. Returns the new list plus a `changed` flag so the caller
 can short-circuit and skip the PATCH (and the version bump that comes with
@@ -713,6 +789,45 @@ impl ZoteroServer {
             .await?;
         ok_json(&result)
     }
+
+    #[tool(
+        description = "Manage an item's tags. Mode 'add' (default) unions the input with existing tags; 'remove' deletes any matching tags; 'replace' substitutes the entire tag list. Tag matching is case-sensitive. Idempotent for add/remove (no-op skips the API write). Returns { key, tags } with the resulting tag list."
+    )]
+    async fn set_tags(
+        &self,
+        Parameters(a): Parameters<SetTagsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let result = blocking(move || mutate_tags(&client, &a.key, &a.tags, a.mode)).await?;
+        ok_json(&result)
+    }
+}
+
+/* Read-modify-PATCH a single item's tags array. Reuses patch_item's
+optimistic-concurrency machinery: a 412 surfaces as the existing
+"version conflict -- retry" error. On a no-op, returns the current tag
+list without hitting the API.
+
+Note: the Tag type in this repo strips Zotero's `type` field (manual=0 /
+automatic=1) on parse, so PATCHing back will demote any "automatic" tags
+to manual. Lifting that limitation requires extending the Tag struct. */
+fn mutate_tags(
+    client: &ZoteroClient,
+    key: &str,
+    input: &[String],
+    mode: SetTagsMode,
+) -> anyhow::Result<serde_json::Value> {
+    let item = client.get(key)?;
+    let current: Vec<String> = item.data.tags.iter().map(|t| t.tag.clone()).collect();
+    let (next, changed) = apply_tags_op(&current, input, mode);
+    if changed {
+        let payload = json!({
+            "tags": next.iter().map(|t| json!({"tag": t})).collect::<Vec<_>>(),
+        });
+        client.patch_item(key, item.version, &payload)?;
+    }
+    Ok(json!({ "key": key, "tags": next }))
 }
 
 /* Read-modify-PATCH a single item's collections array. Reuses the
