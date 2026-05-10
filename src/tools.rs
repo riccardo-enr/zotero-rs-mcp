@@ -1069,6 +1069,7 @@ impl ServerHandler for ZoteroServer {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_prompts()
                 .build(),
         )
         .with_server_info(Implementation::from_build_env())
@@ -1083,7 +1084,8 @@ impl ServerHandler for ZoteroServer {
              trash_list, restore, empty_trash. \
              Resources: zotero://recent (recently added), \
              zotero://item/<key> (full metadata), \
-             zotero://item/<key>/fulltext (indexed text).",
+             zotero://item/<key>/fulltext (indexed text). \
+             Prompts: summarize_paper(key), write_paper_note(key).",
         )
     }
 
@@ -1121,6 +1123,34 @@ impl ServerHandler for ZoteroServer {
         tokio::task::spawn_blocking(move || crate::resources::read(&inner.client, &uri))
             .await
             .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult {
+            prompts: crate::prompts::list(),
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let inner = self.inner.clone();
+        let GetPromptRequestParams {
+            name, arguments, ..
+        } = request;
+        tokio::task::spawn_blocking(move || {
+            crate::prompts::get(&inner.client, &name, arguments.as_ref())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     }
 }
 
