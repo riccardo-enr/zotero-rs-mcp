@@ -30,9 +30,16 @@ pub struct SearchArgs {
     /// Maximum results to return
     #[serde(default = "default_search_limit")]
     pub limit: usize,
+    /// If true (default), return compact records (key, title, type, date, authors).
+    /// Otherwise return full ZoteroItem records.
+    #[serde(default = "default_true")]
+    pub compact: bool,
 }
 fn default_search_limit() -> usize {
     25
+}
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -46,6 +53,9 @@ pub struct RecentArgs {
     /// Number of most-recently-added items to return
     #[serde(default = "default_recent")]
     pub n: usize,
+    /// If true (default), return compact records. Otherwise full ZoteroItem records.
+    #[serde(default = "default_true")]
+    pub compact: bool,
 }
 fn default_recent() -> usize {
     10
@@ -55,6 +65,9 @@ fn default_recent() -> usize {
 pub struct CollectionArgs {
     /// Collection key (8-character alphanumeric)
     pub id: String,
+    /// If true (default), return compact records. Otherwise full ZoteroItem records.
+    #[serde(default = "default_true")]
+    pub compact: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -241,16 +254,21 @@ where
 #[tool_router]
 impl ZoteroServer {
     #[tool(
-        description = "Search the Zotero library by keyword. Returns compact item records (key, title, type, date, authors)."
+        description = "Search the Zotero library by keyword. Returns compact item records (key, title, type, date, authors) by default; pass compact=false for full ZoteroItem records."
     )]
     async fn search(
         &self,
         Parameters(a): Parameters<SearchArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
+        let want_compact = a.compact;
         let items = blocking(move || inner.client.search(&a.query, a.limit)).await?;
-        let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
-        ok_json(&compact)
+        if want_compact {
+            let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
+            ok_json(&compact)
+        } else {
+            ok_json(&items)
+        }
     }
 
     #[tool(
@@ -267,15 +285,22 @@ impl ZoteroServer {
         }
     }
 
-    #[tool(description = "List the N most recently added items in the library.")]
+    #[tool(
+        description = "List the N most recently added items in the library. Returns compact records by default; pass compact=false for full ZoteroItem records."
+    )]
     async fn recent(
         &self,
         Parameters(a): Parameters<RecentArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
+        let want_compact = a.compact;
         let items = blocking(move || inner.client.recent(a.n)).await?;
-        let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
-        ok_json(&compact)
+        if want_compact {
+            let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
+            ok_json(&compact)
+        } else {
+            ok_json(&items)
+        }
     }
 
     #[tool(description = "List child items (notes, attachments, annotations) of an item.")]
@@ -390,13 +415,19 @@ impl ZoteroServer {
         ok_json(&compact)
     }
 
-    #[tool(description = "List items inside a collection by collection key.")]
+    #[tool(
+        description = "List items inside a collection by collection key. Returns compact records by default; pass compact=false for full ZoteroItem records."
+    )]
     async fn collection_items(
         &self,
         Parameters(a): Parameters<CollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
+        let want_compact = a.compact;
         let items = blocking(move || inner.client.collection_items(&a.id)).await?;
+        if !want_compact {
+            return ok_json(&items);
+        }
         let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
         ok_json(&compact)
     }
