@@ -253,6 +253,117 @@ mod tests {
         assert!(compact.title.is_none());
     }
 
+    /* ---- CompactItem abstract truncation (#18) ---- */
+
+    fn make_item_with_abstract(abs: Option<&str>) -> ZoteroItem {
+        ZoteroItem {
+            key: "K".into(),
+            version: 0,
+            data: ItemData {
+                key: "K".into(),
+                version: None,
+                title: None,
+                item_type: None,
+                date: None,
+                abstract_note: abs.map(|s| s.to_string()),
+                creators: vec![],
+                tags: vec![],
+                collections: vec![],
+                doi: None,
+                url: None,
+                extra: serde_json::Map::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn compact_abstract_short_passes_through() {
+        let item = make_item_with_abstract(Some("short abstract"));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        assert_eq!(c.abstract_note.as_deref(), Some("short abstract"));
+    }
+
+    #[test]
+    fn compact_abstract_truncated_with_ellipsis() {
+        let long = "a".repeat(600);
+        let item = make_item_with_abstract(Some(&long));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let got = c.abstract_note.expect("abstract present");
+        assert_eq!(got.chars().count(), 503, "500 chars + '...'");
+        assert!(got.ends_with("..."));
+        assert!(got.starts_with("aaaa"));
+    }
+
+    #[test]
+    fn compact_abstract_at_cap_not_truncated() {
+        let exact = "b".repeat(500);
+        let item = make_item_with_abstract(Some(&exact));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let got = c.abstract_note.expect("abstract present");
+        assert_eq!(got.chars().count(), 500);
+        assert!(!got.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_abstract_empty_omitted() {
+        let item = make_item_with_abstract(Some(""));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        assert!(c.abstract_note.is_none());
+    }
+
+    #[test]
+    fn compact_abstract_missing_omitted() {
+        let item = make_item_with_abstract(None);
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        assert!(c.abstract_note.is_none());
+    }
+
+    #[test]
+    fn compact_abstract_cap_zero_omits_field() {
+        let item = make_item_with_abstract(Some("nonempty"));
+        let c = CompactItem::from_item_with_cap(&item, 0);
+        assert!(c.abstract_note.is_none());
+    }
+
+    #[test]
+    fn compact_abstract_truncates_by_chars_not_bytes() {
+        /* Multi-byte chars: each 'e' with combining acute is 2 bytes; use a
+        sequence of multi-byte characters and ensure truncation respects char
+        boundaries (does not panic, slices cleanly). */
+        let s: String = std::iter::repeat('e').take(600).collect::<String>()
+            + &"a".repeat(10);
+        let item = make_item_with_abstract(Some(&s));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let got = c.abstract_note.unwrap();
+        assert_eq!(got.chars().count(), 503);
+        assert!(got.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_from_item_uses_env_cap_default() {
+        /* Default path: from_item should produce a non-None abstract for a
+        short abstract (default cap is 500). */
+        let item = make_item_with_abstract(Some("hello"));
+        let c = CompactItem::from_item(&item);
+        assert_eq!(c.abstract_note.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn compact_abstract_serialized_when_present() {
+        let item = make_item_with_abstract(Some("present"));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"abstract\":\"present\""));
+    }
+
+    #[test]
+    fn compact_abstract_skipped_when_none() {
+        let item = make_item_with_abstract(None);
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("abstract"));
+    }
+
     /* ---- serde deserialization ---- */
 
     #[test]
