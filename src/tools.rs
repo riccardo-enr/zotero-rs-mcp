@@ -241,6 +241,21 @@ pub struct SetTagsArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunSavedSearchArgs {
+    /// Saved-search key (8-character alphanumeric, from `saved_searches`).
+    pub key: String,
+    /// If true (default), return compact records. Otherwise full ZoteroItem records.
+    #[serde(default = "default_true")]
+    pub compact: bool,
+    /// Maximum results to return.
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct TrashListArgs {
     /// If true (default), return compact records. Otherwise full ZoteroItem records.
     #[serde(default = "default_true")]
@@ -950,6 +965,42 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "List user-defined saved searches in the library. Returns compact records [{ key, name }]. Use the key with `run_saved_search` to fetch matching items."
+    )]
+    async fn saved_searches(
+        &self,
+        Parameters(a): Parameters<LibraryOnlyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let searches = blocking(move || client.searches()).await?;
+        let compact: Vec<_> = searches
+            .iter()
+            .map(|s| json!({"key": s.key, "name": s.data.name}))
+            .collect();
+        ok_json(&compact)
+    }
+
+    #[tool(
+        description = "Run a saved search by key and return matching items. Compact records by default (key, title, type, date, authors); pass compact=false for full ZoteroItem records. Use `saved_searches` to discover keys."
+    )]
+    async fn run_saved_search(
+        &self,
+        Parameters(a): Parameters<RunSavedSearchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let want_compact = a.compact;
+        let client = pick_client(&inner.client, a.library);
+        let items = blocking(move || client.run_saved_search(&a.key, a.limit)).await?;
+        if want_compact {
+            let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
+            ok_json(&compact)
+        } else {
+            ok_json(&items)
+        }
+    }
+
+    #[tool(
         description = "Manage an item's tags. Mode 'add' (default) unions the input with existing tags; 'remove' deletes any matching tags; 'replace' substitutes the entire tag list. Tag matching is case-sensitive. Idempotent for add/remove (no-op skips the API write). Returns { key, tags } with the resulting tag list."
     )]
     async fn set_tags(
@@ -1021,8 +1072,10 @@ impl ServerHandler for ZoteroServer {
                 "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path, fulltext, \
-             export_citation, annotations, notes. Mutating tools: add_doi, add_url, \
-             merge_items.",
+             export_citation, render_citation, saved_searches, run_saved_search, \
+             annotations, notes. Mutating tools: add_doi, add_url, merge_items, \
+             add_to_collection, remove_from_collection, set_tags, create_collection, \
+             trash_list, restore, empty_trash.",
             )
     }
 }
@@ -1432,6 +1485,31 @@ mod tests {
     fn empty_trash_args_with_confirm_true() {
         let a: EmptyTrashArgs = serde_json::from_value(json!({"confirm": true})).unwrap();
         assert!(a.confirm);
+    }
+
+    /* --- saved searches args ------------------------------------------- */
+
+    #[test]
+    fn run_saved_search_args_defaults() {
+        let a: RunSavedSearchArgs = serde_json::from_value(json!({"key": "ABC12DEF"})).unwrap();
+        assert_eq!(a.key, "ABC12DEF");
+        assert!(a.compact, "compact defaults to true");
+        assert_eq!(a.limit, 25);
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn run_saved_search_args_full_payload() {
+        let a: RunSavedSearchArgs = serde_json::from_value(json!({
+            "key": "ABC12DEF",
+            "compact": false,
+            "limit": 5,
+            "library": {"type": "group", "id": 1},
+        }))
+        .unwrap();
+        assert!(!a.compact);
+        assert_eq!(a.limit, 5);
+        assert!(a.library.is_some());
     }
 
     #[test]

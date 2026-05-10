@@ -3,7 +3,7 @@ use serde_json::Value;
 use urlencoding::encode;
 
 use crate::config::Config;
-use crate::types::{FullText, ZoteroCollection, ZoteroItem};
+use crate::types::{FullText, ZoteroCollection, ZoteroItem, ZoteroSearch};
 
 const API_VERSION: &str = "3";
 const TRANSLATOR_URL: &str = "http://localhost:1969/web";
@@ -285,6 +285,37 @@ impl ZoteroClient {
         let url = format!("{}{}/tags?v={API_VERSION}", self.base, lib);
         let body = self.get_json(&url)?;
         serde_json::from_str(&body).context("parsing tags")
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Saved searches                                                      */
+    /* ------------------------------------------------------------------ */
+
+    /* GET /searches -- list user-defined saved searches in the library.
+    Each entry shape: { key, version, data: { key, name, conditions, ... } }.
+    We parse only key + name; conditions are an internal Zotero detail not
+    needed for listing or running. */
+    pub fn searches(&self) -> Result<Vec<ZoteroSearch>> {
+        let lib = self.lib_path();
+        let url = format!("{}{}/searches?v={API_VERSION}", self.base, lib);
+        let body = self.get_json(&url)?;
+        serde_json::from_str(&body).context("parsing saved searches")
+    }
+
+    /* GET /items?searchKey=<key> -- run a saved search and return matching
+    items. Reuses the standard items decoder so the tool layer can apply
+    CompactItem like every other items-returning tool. */
+    pub fn run_saved_search(&self, key: &str, limit: usize) -> Result<Vec<ZoteroItem>> {
+        let lib = self.lib_path();
+        let url = format!(
+            "{}{}/items?searchKey={}&limit={}&v={API_VERSION}",
+            self.base,
+            lib,
+            encode(key),
+            limit
+        );
+        let body = self.get_json(&url)?;
+        serde_json::from_str(&body).context("parsing saved-search results")
     }
 
     /* ------------------------------------------------------------------ */

@@ -106,6 +106,19 @@ pub struct ZoteroCollection {
     pub data: CollectionData,
 }
 
+/* Saved search */
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SavedSearchData {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ZoteroSearch {
+    pub key: String,
+    pub data: SavedSearchData,
+}
+
 /* Indexed full-text payload returned by GET /items/{key}/fulltext on an
 attachment item. Zotero exposes two indexer modes -- a char-based one for
 plaintext attachments (indexedChars/totalChars) and a page-based one for PDFs
