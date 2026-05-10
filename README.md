@@ -74,6 +74,33 @@ Add to `.mcp.json` in your project (or to `~/.claude.json`):
 }
 ```
 
+## HTTP transport (run as a daemon)
+
+Stdio is the default transport. Pass `--http <addr>` to expose the same MCP
+surface over rmcp's streamable-HTTP transport at `/mcp`, so the binary can run
+as a daemon and be consumed remotely:
+
+```sh
+zotero-mcp --http 127.0.0.1:8765
+# MCP endpoint: http://127.0.0.1:8765/mcp
+```
+
+Wire it into a remote MCP client by URL:
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+By default the server only accepts loopback `Host` headers (`localhost`,
+`127.0.0.1`, `::1`) as a DNS-rebinding guard. For a public bind, restrict
+exposure with a reverse proxy / firewall rather than disabling the check.
+
 ## Smoke test
 
 ```sh
