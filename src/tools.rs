@@ -997,4 +997,101 @@ mod tests {
             serde_json::from_value(json!({"key": "X", "collection_id": "Y"})).unwrap();
         assert!(a.library.is_none());
     }
+
+    /* --- set_tags helper ------------------------------------------------ */
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn add_tags_to_empty_dedups_input() {
+        let (next, changed) = apply_tags_op(&[], &s(&["x", "x", "y"]), SetTagsMode::Add);
+        assert!(changed);
+        assert_eq!(next, s(&["x", "y"]));
+    }
+
+    #[test]
+    fn add_tags_when_all_present_is_noop() {
+        let cur = s(&["a", "b"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["a", "b"]), SetTagsMode::Add);
+        assert!(!changed);
+        assert_eq!(next, cur);
+    }
+
+    #[test]
+    fn add_tags_appends_only_missing_preserving_order() {
+        let cur = s(&["a", "b"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["b", "c", "d"]), SetTagsMode::Add);
+        assert!(changed);
+        assert_eq!(next, s(&["a", "b", "c", "d"]));
+    }
+
+    #[test]
+    fn remove_tags_present() {
+        let cur = s(&["a", "b", "c"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["b"]), SetTagsMode::Remove);
+        assert!(changed);
+        assert_eq!(next, s(&["a", "c"]));
+    }
+
+    #[test]
+    fn remove_tags_absent_is_noop() {
+        let cur = s(&["a"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["z"]), SetTagsMode::Remove);
+        assert!(!changed);
+        assert_eq!(next, cur);
+    }
+
+    #[test]
+    fn replace_tags_with_different_set() {
+        let cur = s(&["a", "b"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["x", "y"]), SetTagsMode::Replace);
+        assert!(changed);
+        assert_eq!(next, s(&["x", "y"]));
+    }
+
+    #[test]
+    fn replace_tags_with_same_set_is_noop() {
+        let cur = s(&["a", "b"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["a", "b"]), SetTagsMode::Replace);
+        assert!(!changed);
+        assert_eq!(next, cur);
+    }
+
+    #[test]
+    fn replace_tags_dedups_input() {
+        let (next, changed) = apply_tags_op(&[], &s(&["a", "a", "b"]), SetTagsMode::Replace);
+        assert!(changed);
+        assert_eq!(next, s(&["a", "b"]));
+    }
+
+    #[test]
+    fn tags_are_case_sensitive() {
+        let cur = s(&["ml"]);
+        let (next, changed) = apply_tags_op(&cur, &s(&["ML"]), SetTagsMode::Add);
+        assert!(changed, "uppercase ML must be treated as distinct from lowercase ml");
+        assert_eq!(next, s(&["ml", "ML"]));
+    }
+
+    #[test]
+    fn set_tags_args_mode_default_is_add() {
+        let a: SetTagsArgs =
+            serde_json::from_value(json!({"key": "K", "tags": ["x"]})).unwrap();
+        assert_eq!(a.mode, SetTagsMode::Add);
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn set_tags_args_full_payload() {
+        let a: SetTagsArgs = serde_json::from_value(json!({
+            "key": "K",
+            "tags": ["a"],
+            "mode": "replace",
+            "library": {"type": "group", "id": 1},
+        }))
+        .unwrap();
+        assert_eq!(a.mode, SetTagsMode::Replace);
+        assert!(a.library.is_some());
+    }
 }
