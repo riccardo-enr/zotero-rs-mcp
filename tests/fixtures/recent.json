@@ -1,0 +1,36 @@
+[
+  {
+    "key": "AAAA1111",
+    "version": 100,
+    "data": {
+      "key": "AAAA1111",
+      "version": 100,
+      "title": "Sampling-Based Model Predictive Control for UAV Autonomy",
+      "itemType": "journalArticle",
+      "date": "2024",
+      "creators": [
+        {"creatorType": "author", "firstName": "Alice", "lastName": "Anderson"},
+        {"creatorType": "author", "firstName": "Bob", "lastName": "Brown"}
+      ],
+      "tags": [{"tag": "MPPI"}, {"tag": "UAV"}],
+      "collections": [],
+      "DOI": "10.0000/example.aaaa1111"
+    }
+  },
+  {
+    "key": "BBBB2222",
+    "version": 200,
+    "data": {
+      "key": "BBBB2222",
+      "version": 200,
+      "title": "Robust Path Planning Under Wind Disturbance",
+      "itemType": "conferencePaper",
+      "date": "2025",
+      "creators": [
+        {"creatorType": "author", "firstName": "Carol", "lastName": "Chen"}
+      ],
+      "tags": [{"tag": "planning"}],
+      "collections": []
+    }
+  }
+]
