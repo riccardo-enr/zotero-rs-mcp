@@ -3,6 +3,9 @@ name = "zotero-mcp"
 version = "0.1.0"
 edition = "2021"
 description = "MCP server for the Zotero local connector API"
+license = "MIT"
+repository = "https://github.com/riccardo-enr/zotero-rs-mcp"
+readme = "README.md"
 
 [[bin]]
 name = "zotero-mcp"

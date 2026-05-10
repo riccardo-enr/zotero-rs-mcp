@@ -7,6 +7,15 @@ Rust, that exposes the Zotero local connector API to MCP-aware clients
 Talks to the Zotero application running on `localhost:23119` -- no cloud API
 key required for read access to your local library.
 
+> [!WARNING]
+> **Vibe-coded project.** This was scaffolded end-to-end with an AI coding
+> assistant in a single session. It builds, the smoke tests pass, and the
+> tools work against a real Zotero library, but the code has not been
+> reviewed line-by-line and there are no integration tests. Treat it as a
+> starting point, not production software -- read before you trust, and
+> assume rough edges around mutating tools (`add_doi`, `add_url`,
+> `merge_items`) in particular.
+
 ## Build
 
 ```sh
