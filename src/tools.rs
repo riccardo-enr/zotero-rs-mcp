@@ -171,6 +171,44 @@ pub struct LibraryOnlyArgs {
     pub library: Option<LibraryRef>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CollectionMembershipArgs {
+    /// Zotero item key (8-character alphanumeric).
+    pub key: String,
+    /// Collection key to add the item to / remove the item from.
+    pub collection_id: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionOp {
+    Add,
+    Remove,
+}
+
+/* Pure helper: compute the next `data.collections` array for a single-item
+membership change. Returns the new list plus a `changed` flag so the caller
+can short-circuit and skip the PATCH (and the version bump that comes with
+it) when the operation is a no-op. */
+pub fn apply_collection_op(current: &[String], target: &str, op: CollectionOp) -> (Vec<String>, bool) {
+    let present = current.iter().any(|c| c == target);
+    match (op, present) {
+        (CollectionOp::Add, true) => (current.to_vec(), false),
+        (CollectionOp::Add, false) => {
+            let mut next = current.to_vec();
+            next.push(target.to_string());
+            (next, true)
+        }
+        (CollectionOp::Remove, false) => (current.to_vec(), false),
+        (CollectionOp::Remove, true) => (
+            current.iter().filter(|c| *c != target).cloned().collect(),
+            true,
+        ),
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Server                                                              */
 /* ------------------------------------------------------------------ */
@@ -647,6 +685,52 @@ impl ZoteroServer {
         .await?;
         ok_text(result)
     }
+
+    #[tool(
+        description = "Add an item to a collection. Idempotent: a no-op (no API write) when the item is already in the collection. Returns { key, collections } with the resulting membership array."
+    )]
+    async fn add_to_collection(
+        &self,
+        Parameters(a): Parameters<CollectionMembershipArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let result = blocking(move || mutate_collections(&client, &a.key, &a.collection_id, CollectionOp::Add))
+            .await?;
+        ok_json(&result)
+    }
+
+    #[tool(
+        description = "Remove an item from a collection. Idempotent: a no-op (no API write) when the item is not in the collection. Returns { key, collections } with the resulting membership array."
+    )]
+    async fn remove_from_collection(
+        &self,
+        Parameters(a): Parameters<CollectionMembershipArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let result = blocking(move || mutate_collections(&client, &a.key, &a.collection_id, CollectionOp::Remove))
+            .await?;
+        ok_json(&result)
+    }
+}
+
+/* Read-modify-PATCH a single item's collections array. Reuses the
+optimistic-concurrency machinery in patch_item: a 412 surfaces as the
+"version conflict -- retry" error from patch_json, no auto-retry here.
+On a no-op, returns the current membership without hitting the API. */
+fn mutate_collections(
+    client: &ZoteroClient,
+    key: &str,
+    collection_id: &str,
+    op: CollectionOp,
+) -> anyhow::Result<serde_json::Value> {
+    let item = client.get(key)?;
+    let (next, changed) = apply_collection_op(&item.data.collections, collection_id, op);
+    if changed {
+        client.patch_item(key, item.version, &json!({ "collections": next }))?;
+    }
+    Ok(json!({ "key": key, "collections": next }))
 }
 
 /* ------------------------------------------------------------------ */
