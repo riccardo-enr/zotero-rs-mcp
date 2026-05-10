@@ -438,6 +438,50 @@ impl ZoteroServer {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Tests                                                               */
+/* ------------------------------------------------------------------ */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn citation_format_parses_lowercase_variants() {
+        for (s, want) in [
+            ("\"bibtex\"", CitationFormat::Bibtex),
+            ("\"biblatex\"", CitationFormat::Biblatex),
+            ("\"csljson\"", CitationFormat::Csljson),
+            ("\"ris\"", CitationFormat::Ris),
+        ] {
+            let got: CitationFormat = serde_json::from_str(s).unwrap();
+            assert_eq!(got.as_str(), want.as_str());
+        }
+    }
+
+    #[test]
+    fn citation_format_rejects_unknown() {
+        let err = serde_json::from_str::<CitationFormat>("\"json\"");
+        assert!(err.is_err(), "expected unknown format to be rejected");
+    }
+
+    #[test]
+    fn citation_format_as_str_is_api_token() {
+        assert_eq!(CitationFormat::Bibtex.as_str(), "bibtex");
+        assert_eq!(CitationFormat::Biblatex.as_str(), "biblatex");
+        assert_eq!(CitationFormat::Csljson.as_str(), "csljson");
+        assert_eq!(CitationFormat::Ris.as_str(), "ris");
+    }
+
+    #[test]
+    fn export_citation_args_accepts_multi_key() {
+        let v = serde_json::json!({"keys": ["AAA", "BBB"], "format": "bibtex"});
+        let a: ExportCitationArgs = serde_json::from_value(v).unwrap();
+        assert_eq!(a.keys, vec!["AAA".to_string(), "BBB".to_string()]);
+        assert_eq!(a.format.as_str(), "bibtex");
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  ServerHandler                                                       */
 /* ------------------------------------------------------------------ */
 
