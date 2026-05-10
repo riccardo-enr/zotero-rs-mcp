@@ -6,6 +6,7 @@ any MCP-aware client (Claude Code, etc.) via a stdio command entry. */
 mod client;
 mod config;
 mod merge;
+mod resources;
 mod tools;
 mod types;
 
