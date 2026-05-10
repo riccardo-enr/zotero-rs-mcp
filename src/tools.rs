@@ -1,17 +1,16 @@
 /* MCP tool definitions for the Zotero server. Each tool wraps a method on
-   ZoteroClient (sync, minreq-based) inside `tokio::task::spawn_blocking`
-   so the async runtime stays unblocked even though the underlying HTTP
-   client is synchronous. Localhost requests are fast, but spawn_blocking
-   is the correct contract regardless. */
+ZoteroClient (sync, minreq-based) inside `tokio::task::spawn_blocking`
+so the async runtime stays unblocked even though the underlying HTTP
+client is synchronous. Localhost requests are fast, but spawn_blocking
+is the correct contract regardless. */
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    tool, tool_handler, tool_router,
+    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde_json::json;
 
@@ -32,7 +31,9 @@ pub struct SearchArgs {
     #[serde(default = "default_search_limit")]
     pub limit: usize,
 }
-fn default_search_limit() -> usize { 25 }
+fn default_search_limit() -> usize {
+    25
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct KeyArgs {
@@ -46,7 +47,9 @@ pub struct RecentArgs {
     #[serde(default = "default_recent")]
     pub n: usize,
 }
-fn default_recent() -> usize { 10 }
+fn default_recent() -> usize {
+    10
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CollectionArgs {
@@ -115,7 +118,10 @@ impl ZoteroServer {
             .or_else(|| dirs::home_dir().map(|h| h.join("Zotero").join("storage")))
             .unwrap_or_else(|| PathBuf::from("/Zotero/storage"));
         Ok(Self {
-            inner: Arc::new(Inner { client, storage_root }),
+            inner: Arc::new(Inner {
+                client,
+                storage_root,
+            }),
             tool_router: Self::tool_router(),
         })
     }
@@ -154,7 +160,9 @@ where
 
 #[tool_router]
 impl ZoteroServer {
-    #[tool(description = "Search the Zotero library by keyword. Returns compact item records (key, title, type, date, authors).")]
+    #[tool(
+        description = "Search the Zotero library by keyword. Returns compact item records (key, title, type, date, authors)."
+    )]
     async fn search(
         &self,
         Parameters(a): Parameters<SearchArgs>,
@@ -165,11 +173,10 @@ impl ZoteroServer {
         ok_json(&compact)
     }
 
-    #[tool(description = "Get full metadata for a single item by its key. Set compact=true to return only the abridged record.")]
-    async fn get(
-        &self,
-        Parameters(a): Parameters<GetArgs>,
-    ) -> Result<CallToolResult, McpError> {
+    #[tool(
+        description = "Get full metadata for a single item by its key. Set compact=true to return only the abridged record."
+    )]
+    async fn get(&self, Parameters(a): Parameters<GetArgs>) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let want_compact = a.compact;
         let item: ZoteroItem = blocking(move || inner.client.get(&a.key)).await?;
@@ -230,7 +237,9 @@ impl ZoteroServer {
         ok_json(&v)
     }
 
-    #[tool(description = "Resolve the local filesystem path to attachments (typically PDFs) of an item. Returns one entry per attachment with key, filename, content_type, absolute path under ~/Zotero/storage, and whether the file exists.")]
+    #[tool(
+        description = "Resolve the local filesystem path to attachments (typically PDFs) of an item. Returns one entry per attachment with key, filename, content_type, absolute path under ~/Zotero/storage, and whether the file exists."
+    )]
     async fn attachment_path(
         &self,
         Parameters(a): Parameters<KeyArgs>,
@@ -248,10 +257,7 @@ impl ZoteroServer {
                 if it != Some("attachment") {
                     continue;
                 }
-                let attach_key = c
-                    .get("key")
-                    .and_then(|k| k.as_str())
-                    .unwrap_or("");
+                let attach_key = c.get("key").and_then(|k| k.as_str()).unwrap_or("");
                 let filename = c
                     .get("data")
                     .and_then(|d| d.get("filename"))
@@ -277,7 +283,9 @@ impl ZoteroServer {
         ok_json(&v)
     }
 
-    #[tool(description = "Add a new journalArticle to the library by DOI. The Zotero connector resolves the DOI and fills in metadata.")]
+    #[tool(
+        description = "Add a new journalArticle to the library by DOI. The Zotero connector resolves the DOI and fills in metadata."
+    )]
     async fn add_doi(
         &self,
         Parameters(a): Parameters<DoiArgs>,
@@ -287,7 +295,9 @@ impl ZoteroServer {
         ok_json(&v)
     }
 
-    #[tool(description = "Add a new item to the library by URL via the Zotero translator service (requires the local translator on port 1969).")]
+    #[tool(
+        description = "Add a new item to the library by URL via the Zotero translator service (requires the local translator on port 1969)."
+    )]
     async fn add_url(
         &self,
         Parameters(a): Parameters<UrlArgs>,
@@ -297,7 +307,9 @@ impl ZoteroServer {
         ok_json(&v)
     }
 
-    #[tool(description = "Merge two top-level items: union tags and collections, fill empty fields on the target from the source, re-parent the source's children, and trash the source. Set dry_run=true to preview without writing. Use 'keep' to choose which key survives (defaults to key1).")]
+    #[tool(
+        description = "Merge two top-level items: union tags and collections, fill empty fields on the target from the source, re-parent the source's children, and trash the source. Set dry_run=true to preview without writing. Use 'keep' to choose which key survives (defaults to key1)."
+    )]
     async fn merge_items(
         &self,
         Parameters(a): Parameters<MergeArgs>,
@@ -341,7 +353,9 @@ impl ZoteroServer {
                 ));
             }
 
-            inner.client.patch_item(&target_key, target.version, &merged_data)?;
+            inner
+                .client
+                .patch_item(&target_key, target.version, &merged_data)?;
             for child in &source_children {
                 let child_key = child["key"]
                     .as_str()
@@ -350,7 +364,9 @@ impl ZoteroServer {
                     .as_u64()
                     .ok_or_else(|| anyhow::anyhow!("child missing version"))?;
                 let reparent = json!({"parentItem": target_key});
-                inner.client.patch_item(child_key, child_version, &reparent)?;
+                inner
+                    .client
+                    .patch_item(child_key, child_version, &reparent)?;
             }
             let source_fresh = inner.client.get(&source_key)?;
             inner.client.trash_item(&source_key, source_fresh.version)?;
@@ -374,16 +390,14 @@ impl ZoteroServer {
 #[tool_handler]
 impl ServerHandler for ZoteroServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
-        .with_server_info(Implementation::from_build_env())
-        .with_protocol_version(ProtocolVersion::V_2024_11_05)
-        .with_instructions(
-            "Zotero MCP server. Talks to the local Zotero connector at \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::from_build_env())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_instructions(
+                "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path. \
              Mutating tools: add_doi, add_url, merge_items.",
-        )
+            )
     }
 }

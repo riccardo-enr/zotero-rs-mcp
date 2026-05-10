@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /* Configuration loaded from ~/.config/zotero-cli/config.toml.
-   All fields have sane defaults so the tool works out-of-the-box
-   against a locally running Zotero instance. */
+All fields have sane defaults so the tool works out-of-the-box
+against a locally running Zotero instance. */
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -44,7 +44,8 @@ impl Config {
         let mut cfg = if path.exists() {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading config at {}", path.display()))?;
-            toml::from_str(&text).with_context(|| format!("parsing config at {}", path.display()))?
+            toml::from_str(&text)
+                .with_context(|| format!("parsing config at {}", path.display()))?
         } else {
             Config::default()
         };
@@ -98,7 +99,7 @@ mod tests {
     #[test]
     fn load_missing_file_returns_defaults() {
         /* Config::load() returns defaults when the file doesn't exist.
-           We rely on the real config_path() not colliding with test env. */
+        We rely on the real config_path() not colliding with test env. */
         let cfg = Config::default();
         assert_eq!(cfg.api_base, "http://localhost:23119/api");
     }

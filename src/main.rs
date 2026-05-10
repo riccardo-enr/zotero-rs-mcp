@@ -1,7 +1,7 @@
 /* zotero-mcp -- Model Context Protocol server exposing the Zotero local
-   connector API. Reuses the ZoteroClient + types + merge logic from the
-   sibling zotero-cli crate. Speaks MCP over stdio so it can be wired into
-   any MCP-aware client (Claude Code, etc.) via a stdio command entry. */
+connector API. Reuses the ZoteroClient + types + merge logic from the
+sibling zotero-cli crate. Speaks MCP over stdio so it can be wired into
+any MCP-aware client (Claude Code, etc.) via a stdio command entry. */
 
 mod client;
 mod config;
@@ -10,7 +10,7 @@ mod tools;
 mod types;
 
 use anyhow::Result;
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{transport::stdio, ServiceExt};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -18,8 +18,7 @@ async fn main() -> Result<()> {
     /* Logs go to stderr so they don't corrupt the JSON-RPC stream on stdout */
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
