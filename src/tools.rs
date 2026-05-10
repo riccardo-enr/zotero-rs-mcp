@@ -209,7 +209,7 @@ impl ZoteroServer {
     }
 
     #[tool(
-        description = "Return the indexed full text of an item's primary PDF attachment. Accepts either a parent item key (resolves to its first PDF attachment) or an attachment key directly. Returns { content, indexedChars, totalChars }. Errors when the item has no indexed attachment."
+        description = "Return the indexed full text of an item's primary PDF attachment. Accepts either a parent item key (resolves to its first PDF attachment) or an attachment key directly. Returns { content, indexedChars, totalChars, indexedPages, totalPages } -- PDFs populate the page counters and zero the char counters; plaintext attachments do the inverse. Errors when the item has no indexed attachment."
     )]
     async fn fulltext(
         &self,

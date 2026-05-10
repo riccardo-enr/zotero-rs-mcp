@@ -107,16 +107,21 @@ pub struct ZoteroCollection {
 }
 
 /* Indexed full-text payload returned by GET /items/{key}/fulltext on an
-attachment item. `total_chars` may be absent on older Zotero versions; default
-to zero. `indexed_pages` / `total_pages` are intentionally omitted -- the
-acceptance criteria for issue #1 lists only content/indexedChars/totalChars. */
+attachment item. Zotero exposes two indexer modes -- a char-based one for
+plaintext attachments (indexedChars/totalChars) and a page-based one for PDFs
+(indexedPages/totalPages). Only one pair is populated per response, so all
+four counters default to zero and the unused pair stays at 0. */
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FullText {
     pub content: String,
-    #[serde(rename = "indexedChars")]
+    #[serde(rename = "indexedChars", default)]
     pub indexed_chars: u64,
     #[serde(rename = "totalChars", default)]
     pub total_chars: u64,
+    #[serde(rename = "indexedPages", default)]
+    pub indexed_pages: u64,
+    #[serde(rename = "totalPages", default)]
+    pub total_pages: u64,
 }
 
 #[cfg(test)]
@@ -299,9 +304,27 @@ mod tests {
             content: "abc".into(),
             indexed_chars: 3,
             total_chars: 3,
+            indexed_pages: 0,
+            total_pages: 0,
         };
         let s = serde_json::to_string(&ft).unwrap();
         assert!(s.contains("\"indexedChars\":3"));
         assert!(s.contains("\"totalChars\":3"));
+    }
+
+    #[test]
+    fn fulltext_deserializes_pdf_pages_payload() {
+        /* Zotero's PDF indexer returns page counts instead of char counts.
+        The char fields are absent -- they must default to zero. */
+        let json = r#"{
+            "content": "page text",
+            "indexedPages": 18,
+            "totalPages": 18
+        }"#;
+        let ft: FullText = serde_json::from_str(json).unwrap();
+        assert_eq!(ft.indexed_pages, 18);
+        assert_eq!(ft.total_pages, 18);
+        assert_eq!(ft.indexed_chars, 0);
+        assert_eq!(ft.total_chars, 0);
     }
 }
