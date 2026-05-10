@@ -83,6 +83,34 @@ pub struct MergeArgs {
     pub keep: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CitationFormat {
+    Bibtex,
+    Biblatex,
+    Csljson,
+    Ris,
+}
+
+impl CitationFormat {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Bibtex => "bibtex",
+            Self::Biblatex => "biblatex",
+            Self::Csljson => "csljson",
+            Self::Ris => "ris",
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportCitationArgs {
+    /// One or more Zotero item keys. All keys are fetched in a single API round-trip.
+    pub keys: Vec<String>,
+    /// Citation export format: bibtex, biblatex, csljson, or ris.
+    pub format: CitationFormat,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetArgs {
     /// Zotero item key
@@ -262,6 +290,22 @@ impl ZoteroServer {
         }
     }
 
+    #[tool(
+        description = "Export citations for one or more Zotero items in a chosen format. Accepts bibtex / biblatex / ris (returned as text) or csljson (returned as raw JSON text). All keys are fetched in a single API round-trip."
+    )]
+    async fn export_citation(
+        &self,
+        Parameters(a): Parameters<ExportCitationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if a.keys.is_empty() {
+            return Err(McpError::invalid_params("keys must not be empty", None));
+        }
+        let inner = self.inner.clone();
+        let body =
+            blocking(move || inner.client.export_citation(&a.keys, a.format.as_str())).await?;
+        ok_text(body)
+    }
+
     #[tool(description = "List all collections in the library.")]
     async fn collections(&self) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
@@ -438,6 +482,25 @@ impl ZoteroServer {
 }
 
 /* ------------------------------------------------------------------ */
+/*  ServerHandler                                                       */
+/* ------------------------------------------------------------------ */
+
+#[tool_handler]
+impl ServerHandler for ZoteroServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::from_build_env())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_instructions(
+                "Zotero MCP server. Talks to the local Zotero connector at \
+             http://localhost:23119/api. Read tools: search, get, recent, \
+             children, collections, collection_items, tags, attachment_path, fulltext, \
+             export_citation. Mutating tools: add_doi, add_url, merge_items.",
+            )
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Tests                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -478,24 +541,5 @@ mod tests {
         let a: ExportCitationArgs = serde_json::from_value(v).unwrap();
         assert_eq!(a.keys, vec!["AAA".to_string(), "BBB".to_string()]);
         assert_eq!(a.format.as_str(), "bibtex");
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/*  ServerHandler                                                       */
-/* ------------------------------------------------------------------ */
-
-#[tool_handler]
-impl ServerHandler for ZoteroServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(
-                "Zotero MCP server. Talks to the local Zotero connector at \
-             http://localhost:23119/api. Read tools: search, get, recent, \
-             children, collections, collection_items, tags, attachment_path, fulltext. \
-             Mutating tools: add_doi, add_url, merge_items.",
-            )
     }
 }
