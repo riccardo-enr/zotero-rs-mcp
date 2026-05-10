@@ -172,6 +172,18 @@ pub struct LibraryOnlyArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateCollectionArgs {
+    /// New collection name.
+    pub name: String,
+    /// Optional parent collection key. Omit (or null) to create at the library root.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CollectionMembershipArgs {
     /// Zotero item key (8-character alphanumeric).
     pub key: String,
@@ -188,9 +200,7 @@ pub enum CollectionOp {
     Remove,
 }
 
-#[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SetTagsMode {
     #[default]
@@ -268,7 +278,11 @@ fn dedup_preserve_order(input: &[String]) -> Vec<String> {
 membership change. Returns the new list plus a `changed` flag so the caller
 can short-circuit and skip the PATCH (and the version bump that comes with
 it) when the operation is a no-op. */
-pub fn apply_collection_op(current: &[String], target: &str, op: CollectionOp) -> (Vec<String>, bool) {
+pub fn apply_collection_op(
+    current: &[String],
+    target: &str,
+    op: CollectionOp,
+) -> (Vec<String>, bool) {
     let present = current.iter().any(|c| c == target);
     match (op, present) {
         (CollectionOp::Add, true) => (current.to_vec(), false),
@@ -771,8 +785,10 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let client = pick_client(&inner.client, a.library);
-        let result = blocking(move || mutate_collections(&client, &a.key, &a.collection_id, CollectionOp::Add))
-            .await?;
+        let result = blocking(move || {
+            mutate_collections(&client, &a.key, &a.collection_id, CollectionOp::Add)
+        })
+        .await?;
         ok_json(&result)
     }
 
@@ -785,9 +801,28 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let client = pick_client(&inner.client, a.library);
-        let result = blocking(move || mutate_collections(&client, &a.key, &a.collection_id, CollectionOp::Remove))
-            .await?;
+        let result = blocking(move || {
+            mutate_collections(&client, &a.key, &a.collection_id, CollectionOp::Remove)
+        })
+        .await?;
         ok_json(&result)
+    }
+
+    #[tool(
+        description = "Create a new collection in the library. Optional `parent` key nests the new collection under an existing one; omit to create at the root. Returns { key, name, parent_collection }."
+    )]
+    async fn create_collection(
+        &self,
+        Parameters(a): Parameters<CreateCollectionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let coll = blocking(move || client.create_collection(&a.name, a.parent.as_deref())).await?;
+        ok_json(&serde_json::json!({
+            "key": coll.key,
+            "name": coll.data.name,
+            "parent_collection": coll.data.parent_collection,
+        }))
     }
 
     #[tool(
@@ -1185,14 +1220,16 @@ mod tests {
     fn tags_are_case_sensitive() {
         let cur = s(&["ml"]);
         let (next, changed) = apply_tags_op(&cur, &s(&["ML"]), SetTagsMode::Add);
-        assert!(changed, "uppercase ML must be treated as distinct from lowercase ml");
+        assert!(
+            changed,
+            "uppercase ML must be treated as distinct from lowercase ml"
+        );
         assert_eq!(next, s(&["ml", "ML"]));
     }
 
     #[test]
     fn set_tags_args_mode_default_is_add() {
-        let a: SetTagsArgs =
-            serde_json::from_value(json!({"key": "K", "tags": ["x"]})).unwrap();
+        let a: SetTagsArgs = serde_json::from_value(json!({"key": "K", "tags": ["x"]})).unwrap();
         assert_eq!(a.mode, SetTagsMode::Add);
         assert!(a.library.is_none());
     }
@@ -1207,6 +1244,29 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(a.mode, SetTagsMode::Replace);
+        assert!(a.library.is_some());
+    }
+
+    /* --- create_collection args ---------------------------------------- */
+
+    #[test]
+    fn create_collection_args_minimal() {
+        let a: CreateCollectionArgs = serde_json::from_value(json!({"name": "Foo"})).unwrap();
+        assert_eq!(a.name, "Foo");
+        assert!(a.parent.is_none());
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn create_collection_args_full_payload() {
+        let a: CreateCollectionArgs = serde_json::from_value(json!({
+            "name": "Foo",
+            "parent": "ABC123",
+            "library": {"type": "group", "id": 1},
+        }))
+        .unwrap();
+        assert_eq!(a.name, "Foo");
+        assert_eq!(a.parent.as_deref(), Some("ABC123"));
         assert!(a.library.is_some());
     }
 }
