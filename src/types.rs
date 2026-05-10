@@ -1,4 +1,33 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+/* Compact-mode abstract truncation cap (issue #18).
+
+Read once from `ZOTERO_ABSTRACT_MAX_CHARS` at first access; defaults to 500.
+A cap of 0 disables the abstract field in compact records entirely. */
+pub fn abstract_max_chars() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("ZOTERO_ABSTRACT_MAX_CHARS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(500)
+    })
+}
+
+fn truncate_abstract(text: &str, cap: usize) -> Option<String> {
+    if cap == 0 || text.is_empty() {
+        return None;
+    }
+    let n = text.chars().count();
+    if n <= cap {
+        Some(text.to_string())
+    } else {
+        let mut out: String = text.chars().take(cap).collect();
+        out.push_str("...");
+        Some(out)
+    }
+}
 
 /* Zotero API item data as returned by the local connector API. Explicitly
 declared fields cover the most commonly used metadata; the `extra` map
@@ -70,10 +99,16 @@ pub struct CompactItem {
     pub item_type: Option<String>,
     pub date: Option<String>,
     pub authors: Vec<String>,
+    #[serde(rename = "abstract", skip_serializing_if = "Option::is_none")]
+    pub abstract_note: Option<String>,
 }
 
 impl CompactItem {
     pub fn from_item(item: &ZoteroItem) -> Self {
+        Self::from_item_with_cap(item, abstract_max_chars())
+    }
+
+    pub fn from_item_with_cap(item: &ZoteroItem, abstract_cap: usize) -> Self {
         let authors = item
             .data
             .creators
@@ -81,12 +116,18 @@ impl CompactItem {
             .filter(|c| c.creator_type.as_deref() == Some("author"))
             .map(|c| c.display_name())
             .collect();
+        let abstract_note = item
+            .data
+            .abstract_note
+            .as_deref()
+            .and_then(|t| truncate_abstract(t, abstract_cap));
         CompactItem {
             key: item.key.clone(),
             title: item.data.title.clone(),
             item_type: item.data.item_type.clone(),
             date: item.data.date.clone(),
             authors,
+            abstract_note,
         }
     }
 }
@@ -330,8 +371,7 @@ mod tests {
         /* Multi-byte chars: each 'e' with combining acute is 2 bytes; use a
         sequence of multi-byte characters and ensure truncation respects char
         boundaries (does not panic, slices cleanly). */
-        let s: String = std::iter::repeat('e').take(600).collect::<String>()
-            + &"a".repeat(10);
+        let s: String = std::iter::repeat('e').take(600).collect::<String>() + &"a".repeat(10);
         let item = make_item_with_abstract(Some(&s));
         let c = CompactItem::from_item_with_cap(&item, 500);
         let got = c.abstract_note.unwrap();
