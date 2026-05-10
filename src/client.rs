@@ -309,3 +309,67 @@ fn pluralise(s: &str) -> &str {
         _ => s,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client(library_type: &str, user_id: Option<u64>) -> ZoteroClient {
+        ZoteroClient {
+            base: "http://localhost:23119/api".into(),
+            api_key: None,
+            user_id,
+            library_type: library_type.into(),
+        }
+    }
+
+    #[test]
+    fn lib_path_default_is_local_user() {
+        let c = test_client("user", None);
+        assert_eq!(c.lib_path(), "/users/0");
+    }
+
+    #[test]
+    fn lib_path_with_configured_user() {
+        let c = test_client("user", Some(123));
+        assert_eq!(c.lib_path(), "/users/123");
+    }
+
+    #[test]
+    fn with_library_overrides_to_group() {
+        let c = test_client("user", Some(1));
+        let g = c.with_library(LibraryRef {
+            kind: LibraryKind::Group,
+            id: 42,
+        });
+        assert_eq!(g.lib_path(), "/groups/42");
+        // Original is unchanged.
+        assert_eq!(c.lib_path(), "/users/1");
+    }
+
+    #[test]
+    fn with_library_overrides_to_other_user() {
+        let c = test_client("group", Some(99));
+        let u = c.with_library(LibraryRef {
+            kind: LibraryKind::User,
+            id: 7,
+        });
+        assert_eq!(u.lib_path(), "/users/7");
+    }
+
+    #[test]
+    fn library_ref_serde_round_trip() {
+        let json = r#"{"type":"group","id":42}"#;
+        let parsed: LibraryRef = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.kind, LibraryKind::Group);
+        assert_eq!(parsed.id, 42);
+        let back = serde_json::to_value(parsed).unwrap();
+        assert_eq!(back, serde_json::json!({"type": "group", "id": 42}));
+    }
+
+    #[test]
+    fn library_ref_rejects_unknown_kind() {
+        let json = r#"{"type":"team","id":1}"#;
+        assert!(serde_json::from_str::<LibraryRef>(json).is_err());
+    }
+}
