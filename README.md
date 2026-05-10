@@ -58,7 +58,8 @@ user_id     = 0         # 0 == local user
 library_type = "user"   # "user" or "group"
 ```
 
-Environment overrides: `ZOTERO_API_BASE`, `ZOTERO_API_KEY`, `ZOTERO_STORAGE`.
+Environment overrides: `ZOTERO_API_BASE`, `ZOTERO_API_KEY`, `ZOTERO_STORAGE`,
+`ZOTERO_ABSTRACT_MAX_CHARS` (compact-mode abstract cap, default 500; 0 omits).
 
 ## Wiring into Claude Code
 
