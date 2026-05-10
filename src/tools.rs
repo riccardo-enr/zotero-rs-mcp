@@ -171,6 +171,58 @@ fn map_err(e: anyhow::Error) -> McpError {
     McpError::internal_error(format!("{e:#}"), None)
 }
 
+/* Filter a `children` payload down to annotation entries with a compact
+shape: { key, type, text, comment, page_label, color }. Source fields:
+data.annotationType / annotationText / annotationComment /
+annotationPageLabel / annotationColor. */
+fn filter_annotations(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    children
+        .iter()
+        .filter(|c| {
+            c.get("data")
+                .and_then(|d| d.get("itemType"))
+                .and_then(|t| t.as_str())
+                == Some("annotation")
+        })
+        .map(|c| {
+            let data = c.get("data");
+            let g = |k: &str| -> serde_json::Value {
+                data.and_then(|d| d.get(k)).cloned().unwrap_or(json!(""))
+            };
+            json!({
+                "key": c.get("key").cloned().unwrap_or(json!("")),
+                "type": g("annotationType"),
+                "text": g("annotationText"),
+                "comment": g("annotationComment"),
+                "page_label": g("annotationPageLabel"),
+                "color": g("annotationColor"),
+            })
+        })
+        .collect()
+}
+
+/* Filter a `children` payload down to note entries with shape
+{ key, note, parent_item }. */
+fn filter_notes(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    children
+        .iter()
+        .filter(|c| {
+            c.get("data")
+                .and_then(|d| d.get("itemType"))
+                .and_then(|t| t.as_str())
+                == Some("note")
+        })
+        .map(|c| {
+            let data = c.get("data");
+            json!({
+                "key": c.get("key").cloned().unwrap_or(json!("")),
+                "note": data.and_then(|d| d.get("note")).cloned().unwrap_or(json!("")),
+                "parent_item": data.and_then(|d| d.get("parentItem")).cloned().unwrap_or(json!("")),
+            })
+        })
+        .collect()
+}
+
 async fn blocking<F, R>(f: F) -> Result<R, McpError>
 where
     F: FnOnce() -> anyhow::Result<R> + Send + 'static,
@@ -234,6 +286,27 @@ impl ZoteroServer {
         let inner = self.inner.clone();
         let v = blocking(move || inner.client.children(&a.key)).await?;
         ok_json(&v)
+    }
+
+    #[tool(
+        description = "List annotations (highlights, margin notes) attached to an item. Returns compact records { key, type, text, comment, page_label, color }."
+    )]
+    async fn annotations(
+        &self,
+        Parameters(a): Parameters<KeyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let children = blocking(move || inner.client.children(&a.key)).await?;
+        ok_json(&filter_annotations(&children))
+    }
+
+    #[tool(
+        description = "List standalone child notes of an item. Returns { key, note (HTML), parent_item }."
+    )]
+    async fn notes(&self, Parameters(a): Parameters<KeyArgs>) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let children = blocking(move || inner.client.children(&a.key)).await?;
+        ok_json(&filter_notes(&children))
     }
 
     #[tool(
@@ -495,7 +568,8 @@ impl ServerHandler for ZoteroServer {
                 "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path, fulltext, \
-             export_citation. Mutating tools: add_doi, add_url, merge_items.",
+             export_citation, annotations, notes. Mutating tools: add_doi, add_url, \
+             merge_items.",
             )
     }
 }
