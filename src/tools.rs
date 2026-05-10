@@ -1209,4 +1209,28 @@ mod tests {
         assert_eq!(a.mode, SetTagsMode::Replace);
         assert!(a.library.is_some());
     }
+
+    /* --- create_collection args ---------------------------------------- */
+
+    #[test]
+    fn create_collection_args_minimal() {
+        let a: CreateCollectionArgs =
+            serde_json::from_value(json!({"name": "Foo"})).unwrap();
+        assert_eq!(a.name, "Foo");
+        assert!(a.parent.is_none());
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn create_collection_args_full_payload() {
+        let a: CreateCollectionArgs = serde_json::from_value(json!({
+            "name": "Foo",
+            "parent": "ABC123",
+            "library": {"type": "group", "id": 1},
+        }))
+        .unwrap();
+        assert_eq!(a.name, "Foo");
+        assert_eq!(a.parent.as_deref(), Some("ABC123"));
+        assert!(a.library.is_some());
+    }
 }
