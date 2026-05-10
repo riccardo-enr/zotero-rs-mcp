@@ -1,0 +1,19 @@
+{
+  "key": "AAAA1111",
+  "version": 100,
+  "data": {
+    "key": "AAAA1111",
+    "version": 100,
+    "title": "Sampling-Based Model Predictive Control for UAV Autonomy",
+    "itemType": "journalArticle",
+    "date": "2024",
+    "abstractNote": "We propose a sampling-based MPC scheme that enables fast UAV autonomy under disturbance.",
+    "creators": [
+      {"creatorType": "author", "firstName": "Alice", "lastName": "Anderson"},
+      {"creatorType": "author", "firstName": "Bob", "lastName": "Brown"}
+    ],
+    "tags": [{"tag": "MPPI"}, {"tag": "UAV"}],
+    "collections": [],
+    "DOI": "10.0000/example.aaaa1111"
+  }
+}

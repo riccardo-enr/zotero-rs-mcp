@@ -20,6 +20,7 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const FIXTURE_RECENT: &str = include_str!("fixtures/recent.json");
+const FIXTURE_ITEM: &str = include_str!("fixtures/item_AAAA1111.json");
 
 /* ---- helpers ------------------------------------------------------- */
 
@@ -70,6 +71,13 @@ async fn mcp_tools_list_and_recent_against_recorded_fixture() {
         .and(query_param("sort", "dateAdded"))
         .and(query_param("direction", "desc"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&recent_items))
+        .mount(&server)
+        .await;
+
+    let item: Value = serde_json::from_str(FIXTURE_ITEM).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/users/0/items/AAAA1111"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&item))
         .mount(&server)
         .await;
 
@@ -279,7 +287,73 @@ async fn mcp_tools_list_and_recent_against_recorded_fixture() {
         .collect();
     assert_eq!(keys, vec!["AAAA1111", "BBBB2222"]);
 
-    /* 9. Tear down -------------------------------------------------- */
+    /* 9. prompts/list --------------------------------------------- */
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 7, "method": "prompts/list"}),
+    )
+    .await;
+
+    let prompt_list = recv_id(&mut reader, 7).await;
+    let prompts = prompt_list
+        .pointer("/result/prompts")
+        .and_then(|v| v.as_array())
+        .expect("prompts array");
+    let prompt_names: Vec<&str> = prompts
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+        .collect();
+    assert!(
+        prompt_names.contains(&"summarize_paper") && prompt_names.contains(&"write_paper_note"),
+        "prompts/list missing expected names; got {prompt_names:?}"
+    );
+
+    /* 10. prompts/get write_paper_note ---------------------------- */
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "prompts/get",
+            "params": {
+                "name": "write_paper_note",
+                "arguments": {"key": "AAAA1111"}
+            }
+        }),
+    )
+    .await;
+
+    let get_resp = recv_id(&mut reader, 8).await;
+    let messages = get_resp
+        .pointer("/result/messages")
+        .and_then(|v| v.as_array())
+        .expect("messages array");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].get("role").and_then(|v| v.as_str()),
+        Some("user")
+    );
+    let text = messages[0]
+        .pointer("/content/text")
+        .and_then(|v| v.as_str())
+        .expect("text content");
+    for required in [
+        "## Key Claim",
+        "## Problem Statement",
+        "## Method",
+        "## Relevance to Our Work",
+        "## Key References",
+        "zotero_key: AAAA1111",
+        "Sampling-Based Model Predictive Control for UAV Autonomy",
+        "Anderson, Alice",
+    ] {
+        assert!(
+            text.contains(required),
+            "prompt body missing {required:?}; got {text}"
+        );
+    }
+
+    /* 11. Tear down ------------------------------------------------- */
     let _ = stdin.shutdown().await;
     drop(stdin);
     let _ = timeout(Duration::from_secs(3), child.wait()).await;
