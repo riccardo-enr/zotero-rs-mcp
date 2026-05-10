@@ -73,11 +73,11 @@ async fn mcp_tools_list_and_recent_against_recorded_fixture() {
         .mount(&server)
         .await;
 
-    let api_base = server.uri(); // e.g. http://127.0.0.1:PORT
     /* The client appends paths like `/users/0/items` to ZOTERO_API_BASE
     verbatim, so the env var should NOT include a trailing /api segment
     for the test stub -- we just expose the bare wiremock URL and mount
     paths that match what ZoteroClient builds. */
+    let api_base = server.uri(); // e.g. http://127.0.0.1:PORT
 
     /* 2. Spawn the binary in an isolated env ----------------------- */
     let tmp = tempfile::tempdir().unwrap();
