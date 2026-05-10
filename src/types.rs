@@ -1,4 +1,33 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+/* Compact-mode abstract truncation cap (issue #18).
+
+Read once from `ZOTERO_ABSTRACT_MAX_CHARS` at first access; defaults to 500.
+A cap of 0 disables the abstract field in compact records entirely. */
+pub fn abstract_max_chars() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("ZOTERO_ABSTRACT_MAX_CHARS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(500)
+    })
+}
+
+fn truncate_abstract(text: &str, cap: usize) -> Option<String> {
+    if cap == 0 || text.is_empty() {
+        return None;
+    }
+    let n = text.chars().count();
+    if n <= cap {
+        Some(text.to_string())
+    } else {
+        let mut out: String = text.chars().take(cap).collect();
+        out.push_str("...");
+        Some(out)
+    }
+}
 
 /* Zotero API item data as returned by the local connector API. Explicitly
 declared fields cover the most commonly used metadata; the `extra` map
@@ -70,10 +99,16 @@ pub struct CompactItem {
     pub item_type: Option<String>,
     pub date: Option<String>,
     pub authors: Vec<String>,
+    #[serde(rename = "abstract", skip_serializing_if = "Option::is_none")]
+    pub abstract_note: Option<String>,
 }
 
 impl CompactItem {
     pub fn from_item(item: &ZoteroItem) -> Self {
+        Self::from_item_with_cap(item, abstract_max_chars())
+    }
+
+    pub fn from_item_with_cap(item: &ZoteroItem, abstract_cap: usize) -> Self {
         let authors = item
             .data
             .creators
@@ -81,12 +116,18 @@ impl CompactItem {
             .filter(|c| c.creator_type.as_deref() == Some("author"))
             .map(|c| c.display_name())
             .collect();
+        let abstract_note = item
+            .data
+            .abstract_note
+            .as_deref()
+            .and_then(|t| truncate_abstract(t, abstract_cap));
         CompactItem {
             key: item.key.clone(),
             title: item.data.title.clone(),
             item_type: item.data.item_type.clone(),
             date: item.data.date.clone(),
             authors,
+            abstract_note,
         }
     }
 }
@@ -251,6 +292,116 @@ mod tests {
         let compact = CompactItem::from_item(&item);
         assert!(compact.authors.is_empty());
         assert!(compact.title.is_none());
+    }
+
+    /* ---- CompactItem abstract truncation (#18) ---- */
+
+    fn make_item_with_abstract(abs: Option<&str>) -> ZoteroItem {
+        ZoteroItem {
+            key: "K".into(),
+            version: 0,
+            data: ItemData {
+                key: "K".into(),
+                version: None,
+                title: None,
+                item_type: None,
+                date: None,
+                abstract_note: abs.map(|s| s.to_string()),
+                creators: vec![],
+                tags: vec![],
+                collections: vec![],
+                doi: None,
+                url: None,
+                extra: serde_json::Map::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn compact_abstract_short_passes_through() {
+        let item = make_item_with_abstract(Some("short abstract"));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        assert_eq!(c.abstract_note.as_deref(), Some("short abstract"));
+    }
+
+    #[test]
+    fn compact_abstract_truncated_with_ellipsis() {
+        let long = "a".repeat(600);
+        let item = make_item_with_abstract(Some(&long));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let got = c.abstract_note.expect("abstract present");
+        assert_eq!(got.chars().count(), 503, "500 chars + '...'");
+        assert!(got.ends_with("..."));
+        assert!(got.starts_with("aaaa"));
+    }
+
+    #[test]
+    fn compact_abstract_at_cap_not_truncated() {
+        let exact = "b".repeat(500);
+        let item = make_item_with_abstract(Some(&exact));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let got = c.abstract_note.expect("abstract present");
+        assert_eq!(got.chars().count(), 500);
+        assert!(!got.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_abstract_empty_omitted() {
+        let item = make_item_with_abstract(Some(""));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        assert!(c.abstract_note.is_none());
+    }
+
+    #[test]
+    fn compact_abstract_missing_omitted() {
+        let item = make_item_with_abstract(None);
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        assert!(c.abstract_note.is_none());
+    }
+
+    #[test]
+    fn compact_abstract_cap_zero_omits_field() {
+        let item = make_item_with_abstract(Some("nonempty"));
+        let c = CompactItem::from_item_with_cap(&item, 0);
+        assert!(c.abstract_note.is_none());
+    }
+
+    #[test]
+    fn compact_abstract_truncates_by_chars_not_bytes() {
+        /* Multi-byte chars: each 'e' with combining acute is 2 bytes; use a
+        sequence of multi-byte characters and ensure truncation respects char
+        boundaries (does not panic, slices cleanly). */
+        let s: String = std::iter::repeat('e').take(600).collect::<String>() + &"a".repeat(10);
+        let item = make_item_with_abstract(Some(&s));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let got = c.abstract_note.unwrap();
+        assert_eq!(got.chars().count(), 503);
+        assert!(got.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_from_item_uses_env_cap_default() {
+        /* Default path: from_item should produce a non-None abstract for a
+        short abstract (default cap is 500). */
+        let item = make_item_with_abstract(Some("hello"));
+        let c = CompactItem::from_item(&item);
+        assert_eq!(c.abstract_note.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn compact_abstract_serialized_when_present() {
+        let item = make_item_with_abstract(Some("present"));
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"abstract\":\"present\""));
+    }
+
+    #[test]
+    fn compact_abstract_skipped_when_none() {
+        let item = make_item_with_abstract(None);
+        let c = CompactItem::from_item_with_cap(&item, 500);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("abstract"));
     }
 
     /* ---- serde deserialization ---- */
