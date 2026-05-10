@@ -844,4 +844,73 @@ mod tests {
             assert_ne!(entry["key"], "ATTACHKY");
         }
     }
+
+    /* --- collection membership helper ----------------------------------- */
+
+    #[test]
+    fn add_collection_to_empty() {
+        let cur: Vec<String> = vec![];
+        let (next, changed) = apply_collection_op(&cur, "AAAA1111", CollectionOp::Add);
+        assert!(changed);
+        assert_eq!(next, vec!["AAAA1111".to_string()]);
+    }
+
+    #[test]
+    fn add_collection_already_present_is_noop() {
+        let cur = vec!["AAAA1111".to_string(), "BBBB2222".to_string()];
+        let (next, changed) = apply_collection_op(&cur, "AAAA1111", CollectionOp::Add);
+        assert!(!changed, "adding a present id must not flip changed");
+        assert_eq!(next, cur);
+    }
+
+    #[test]
+    fn add_collection_appends_at_end() {
+        let cur = vec!["AAAA1111".to_string(), "BBBB2222".to_string()];
+        let (next, changed) = apply_collection_op(&cur, "CCCC3333", CollectionOp::Add);
+        assert!(changed);
+        assert_eq!(
+            next,
+            vec![
+                "AAAA1111".to_string(),
+                "BBBB2222".to_string(),
+                "CCCC3333".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_collection_present() {
+        let cur = vec!["AAAA1111".to_string(), "BBBB2222".to_string()];
+        let (next, changed) = apply_collection_op(&cur, "AAAA1111", CollectionOp::Remove);
+        assert!(changed);
+        assert_eq!(next, vec!["BBBB2222".to_string()]);
+    }
+
+    #[test]
+    fn remove_collection_absent_is_noop() {
+        let cur = vec!["AAAA1111".to_string()];
+        let (next, changed) = apply_collection_op(&cur, "ZZZZ9999", CollectionOp::Remove);
+        assert!(!changed);
+        assert_eq!(next, cur);
+    }
+
+    #[test]
+    fn collection_membership_args_full_payload() {
+        let a: CollectionMembershipArgs = serde_json::from_value(json!({
+            "key": "ITEM1234",
+            "collection_id": "COLLAAAA",
+            "library": {"type": "group", "id": 42},
+        }))
+        .unwrap();
+        assert_eq!(a.key, "ITEM1234");
+        assert_eq!(a.collection_id, "COLLAAAA");
+        assert!(a.library.is_some());
+    }
+
+    #[test]
+    fn collection_membership_args_library_optional() {
+        let a: CollectionMembershipArgs =
+            serde_json::from_value(json!({"key": "X", "collection_id": "Y"})).unwrap();
+        assert!(a.library.is_none());
+    }
 }
