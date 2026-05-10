@@ -837,6 +837,70 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "List items in the trash (deleted=1). Compact records by default (key, title, type, date, authors); set compact=false for full ZoteroItem records."
+    )]
+    async fn trash_list(
+        &self,
+        Parameters(a): Parameters<TrashListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let items = blocking(move || client.trash_list()).await?;
+        if a.compact {
+            let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
+            ok_json(&compact)
+        } else {
+            ok_json(&items)
+        }
+    }
+
+    #[tool(
+        description = "Restore a single item from the trash (PATCH deleted=0). Returns { key, restored: true } on success."
+    )]
+    async fn restore(
+        &self,
+        Parameters(a): Parameters<RestoreArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let key = a.key.clone();
+        blocking(move || {
+            let item = client.get(&a.key)?;
+            client.restore_item(&a.key, item.version)
+        })
+        .await?;
+        ok_json(&serde_json::json!({ "key": key, "restored": true }))
+    }
+
+    #[tool(
+        description = "Permanently delete every item currently in the trash. Requires confirm=true; rejects otherwise. Returns { deleted_count }. Per-item DELETE with optimistic concurrency -- a concurrent edit to a trashed item surfaces as a version-conflict error."
+    )]
+    async fn empty_trash(
+        &self,
+        Parameters(a): Parameters<EmptyTrashArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !a.confirm {
+            return Err(McpError::invalid_params(
+                "empty_trash requires confirm=true to prevent accidental wipes".to_string(),
+                None,
+            ));
+        }
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let count = blocking(move || -> anyhow::Result<usize> {
+            let items = client.trash_list()?;
+            let mut n = 0usize;
+            for it in &items {
+                client.delete_item(&it.key, it.version)?;
+                n += 1;
+            }
+            Ok(n)
+        })
+        .await?;
+        ok_json(&serde_json::json!({ "deleted_count": count }))
+    }
+
+    #[tool(
         description = "Create a new collection in the library. Optional `parent` key nests the new collection under an existing one; omit to create at the root. Returns { key, name, parent_collection }."
     )]
     async fn create_collection(

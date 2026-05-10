@@ -325,6 +325,53 @@ impl ZoteroClient {
         Ok(())
     }
 
+    /* GET /items/trash -- listing of soft-deleted items. Returns the same
+    ZoteroItem shape as `search` so the tool layer can apply CompactItem. */
+    pub fn trash_list(&self) -> Result<Vec<ZoteroItem>> {
+        let lib = self.lib_path();
+        let url = format!("{}{}/items/trash?v={API_VERSION}", self.base, lib);
+        let body = self.get_json(&url)?;
+        serde_json::from_str(&body).context("parsing trash list")
+    }
+
+    /* PATCH `data.deleted = 0` -- the inverse of `trash_item`. Reuses the
+    optimistic-concurrency machinery; a 412 surfaces as the existing
+    "version conflict -- retry" error. */
+    pub fn restore_item(&self, key: &str, version: u64) -> Result<()> {
+        let lib = self.lib_path();
+        let url = format!("{}{}/items/{}?v={API_VERSION}", self.base, lib, key);
+        let payload = serde_json::json!({"deleted": 0});
+        self.patch_json(&url, &payload, version)?;
+        Ok(())
+    }
+
+    /* DELETE /items/{key} -- hard delete. Caller supplies the item's
+    version (already in hand from the trash listing) which goes into the
+    `If-Unmodified-Since-Version` header. 412 surfaces as a version
+    conflict error so callers can retry on a fresh listing. */
+    pub fn delete_item(&self, key: &str, version: u64) -> Result<()> {
+        let lib = self.lib_path();
+        let url = format!("{}{}/items/{}?v={API_VERSION}", self.base, lib, key);
+        let mut req = minreq::delete(&url)
+            .with_header("If-Unmodified-Since-Version", version.to_string())
+            .with_timeout(30);
+        if let Some(key) = &self.api_key {
+            req = req.with_header("Zotero-API-Key", key);
+        }
+        let resp = req.send().context("sending DELETE request")?;
+        if resp.status_code == 412 {
+            anyhow::bail!("item was modified since it was retrieved (version conflict) -- retry");
+        }
+        if resp.status_code >= 400 {
+            anyhow::bail!(
+                "Zotero API error {}: {}",
+                resp.status_code,
+                resp.as_str().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
     /* ------------------------------------------------------------------ */
     /*  Add items                                                           */
     /* ------------------------------------------------------------------ */
