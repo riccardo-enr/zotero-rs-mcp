@@ -1,5 +1,7 @@
 # zotero-mcp
 
+[![CI](https://github.com/riccardo-enr/zotero-rs-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/riccardo-enr/zotero-rs-mcp/actions/workflows/ci.yml)
+
 A [Model Context Protocol](https://modelcontextprotocol.io) server, written in
 Rust, that exposes the Zotero local connector API to MCP-aware clients
 (Claude Code, Claude Desktop, etc.).

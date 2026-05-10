@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 /* Zotero API item data as returned by the local connector API. Explicitly
-   declared fields cover the most commonly used metadata; the `extra` map
-   captures every remaining Zotero field (publisher, journal, volume, etc.)
-   so they round-trip through serialization without data loss. */
+declared fields cover the most commonly used metadata; the `extra` map
+captures every remaining Zotero field (publisher, journal, volume, etc.)
+so they round-trip through serialization without data loss. */
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -61,7 +61,7 @@ pub struct ZoteroItem {
 }
 
 /* Compact representation for list commands — strips verbose fields (abstract,
-   url, doi, tags) to reduce JSON payload when piping to an LLM. */
+url, doi, tags) to reduce JSON payload when piping to an LLM. */
 #[derive(Debug, Serialize)]
 pub struct CompactItem {
     pub key: String,

@@ -104,7 +104,10 @@ impl ZoteroClient {
 
     pub fn children(&self, key: &str) -> Result<Vec<Value>> {
         let lib = self.lib_path();
-        let url = format!("{}{}/items/{}/children?v={API_VERSION}", self.base, lib, key);
+        let url = format!(
+            "{}{}/items/{}/children?v={API_VERSION}",
+            self.base, lib, key
+        );
         let body = self.get_json(&url)?;
         serde_json::from_str(&body).context("parsing children")
     }
@@ -122,7 +125,10 @@ impl ZoteroClient {
 
     pub fn collection_items(&self, id: &str) -> Result<Vec<ZoteroItem>> {
         let lib = self.lib_path();
-        let url = format!("{}{}/collections/{}/items?v={API_VERSION}", self.base, lib, id);
+        let url = format!(
+            "{}{}/collections/{}/items?v={API_VERSION}",
+            self.base, lib, id
+        );
         let body = self.get_json(&url)?;
         serde_json::from_str(&body).context("parsing collection items")
     }
@@ -168,9 +174,7 @@ impl ZoteroClient {
         }
         let resp = req.send().context("sending PATCH request")?;
         if resp.status_code == 412 {
-            anyhow::bail!(
-                "item was modified since it was retrieved (version conflict) -- retry"
-            );
+            anyhow::bail!("item was modified since it was retrieved (version conflict) -- retry");
         }
         if resp.status_code >= 400 {
             anyhow::bail!(

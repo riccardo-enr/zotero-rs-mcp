@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::types::ZoteroItem;
 
 /* Fields that belong to the item's identity or are managed by Zotero
-   itself -- never overwritten during a merge. */
+itself -- never overwritten during a merge. */
 const STRUCTURAL_FIELDS: &[&str] = &[
     "key",
     "version",
@@ -18,12 +18,12 @@ const STRUCTURAL_FIELDS: &[&str] = &[
 ];
 
 /* Produce a merged JSON data object suitable for PATCHing the target item.
-   `target` is the item that survives; `source` is the item that will be
-   trashed.  Strategy:
-     - scalar fields: keep target's value when non-empty, else take source's
-     - tags: union by tag name
-     - collections: union by collection key
-     - creators: keep target's list when non-empty */
+`target` is the item that survives; `source` is the item that will be
+trashed.  Strategy:
+  - scalar fields: keep target's value when non-empty, else take source's
+  - tags: union by tag name
+  - collections: union by collection key
+  - creators: keep target's list when non-empty */
 pub fn reconcile_items(target: &ZoteroItem, source: &ZoteroItem) -> Value {
     let mut merged = serde_json::to_value(&target.data).unwrap();
     let source_data = serde_json::to_value(&source.data).unwrap();
@@ -67,7 +67,10 @@ pub fn reconcile_items(target: &ZoteroItem, source: &ZoteroItem) -> Value {
     }
     let mut cols_sorted: Vec<String> = col_set.into_iter().collect();
     cols_sorted.sort();
-    merged_obj.insert("collections".into(), serde_json::to_value(cols_sorted).unwrap());
+    merged_obj.insert(
+        "collections".into(),
+        serde_json::to_value(cols_sorted).unwrap(),
+    );
 
     merged
 }
@@ -115,9 +118,7 @@ pub fn build_dry_run_report(
         }
         let old_val = target_obj.get(key);
         if old_val != Some(merged_val) {
-            let old_display = old_val
-                .map(display_val)
-                .unwrap_or_else(|| "(none)".into());
+            let old_display = old_val.map(display_val).unwrap_or_else(|| "(none)".into());
             let new_display = display_val(merged_val);
             changed.push(format!("  {}: {} -> {}", key, old_display, new_display));
         }
@@ -152,10 +153,7 @@ pub fn build_dry_run_report(
 
     /* Children to re-parent */
     if !source_children.is_empty() {
-        lines.push(format!(
-            "children to re-parent: {}",
-            source_children.len()
-        ));
+        lines.push(format!("children to re-parent: {}", source_children.len()));
     }
 
     lines.push(String::new());
@@ -238,13 +236,17 @@ mod tests {
     fn union_tags() {
         let mut target = make_item("T1");
         target.data.tags = vec![
-            Tag { tag: "alpha".into() },
+            Tag {
+                tag: "alpha".into(),
+            },
             Tag { tag: "beta".into() },
         ];
         let mut source = make_item("S1");
         source.data.tags = vec![
             Tag { tag: "beta".into() },
-            Tag { tag: "gamma".into() },
+            Tag {
+                tag: "gamma".into(),
+            },
         ];
 
         let merged = reconcile_items(&target, &source);
