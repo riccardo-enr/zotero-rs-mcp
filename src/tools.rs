@@ -14,7 +14,7 @@ use rmcp::{
 };
 use serde_json::json;
 
-use crate::client::ZoteroClient;
+use crate::client::{LibraryRef, ZoteroClient};
 use crate::config::Config;
 use crate::merge;
 use crate::types::{CompactItem, FullText, ZoteroItem};
@@ -34,6 +34,10 @@ pub struct SearchArgs {
     /// Otherwise return full ZoteroItem records.
     #[serde(default = "default_true")]
     pub compact: bool,
+    /// Optional per-call library override, e.g. {"type":"group","id":42}.
+    /// Falls back to server config when omitted.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 fn default_search_limit() -> usize {
     25
@@ -46,6 +50,9 @@ fn default_true() -> bool {
 pub struct KeyArgs {
     /// Zotero item key (8-character alphanumeric, e.g. "ABC12DEF")
     pub key: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -56,6 +63,9 @@ pub struct RecentArgs {
     /// If true (default), return compact records. Otherwise full ZoteroItem records.
     #[serde(default = "default_true")]
     pub compact: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 fn default_recent() -> usize {
     10
@@ -68,18 +78,27 @@ pub struct CollectionArgs {
     /// If true (default), return compact records. Otherwise full ZoteroItem records.
     #[serde(default = "default_true")]
     pub compact: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DoiArgs {
     /// Digital Object Identifier, e.g. "10.1234/example"
     pub doi: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct UrlArgs {
     /// Web URL of the resource to import (paper page, arxiv abs, etc.)
     pub url: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -94,6 +113,9 @@ pub struct MergeArgs {
     /// Which key to keep as the surviving (target) item; defaults to key1
     #[serde(default)]
     pub keep: Option<String>,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
@@ -122,6 +144,9 @@ pub struct ExportCitationArgs {
     pub keys: Vec<String>,
     /// Citation export format: bibtex, biblatex, csljson, or ris.
     pub format: CitationFormat,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -132,6 +157,18 @@ pub struct GetArgs {
     /// Otherwise the full item is returned.
     #[serde(default)]
     pub compact: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+/* Args for tools that need only the optional library override (collections,
+tags). Keeping a single shared struct avoids duplicating the doc comment. */
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct LibraryOnlyArgs {
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
 }
 
 /* ------------------------------------------------------------------ */
@@ -236,6 +273,17 @@ fn filter_notes(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/* Resolve the per-call library override. Returns a clone of the configured
+client untouched when no override is supplied, or a clone with user_id /
+library_type swapped to the requested target. The clone is cheap (a few
+String fields) and avoids threading the override through every method. */
+fn pick_client(client: &ZoteroClient, library: Option<LibraryRef>) -> ZoteroClient {
+    match library {
+        Some(lib) => client.with_library(lib),
+        None => client.clone(),
+    }
+}
+
 async fn blocking<F, R>(f: F) -> Result<R, McpError>
 where
     F: FnOnce() -> anyhow::Result<R> + Send + 'static,
@@ -262,7 +310,8 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let want_compact = a.compact;
-        let items = blocking(move || inner.client.search(&a.query, a.limit)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let items = blocking(move || client.search(&a.query, a.limit)).await?;
         if want_compact {
             let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
             ok_json(&compact)
@@ -277,7 +326,8 @@ impl ZoteroServer {
     async fn get(&self, Parameters(a): Parameters<GetArgs>) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let want_compact = a.compact;
-        let item: ZoteroItem = blocking(move || inner.client.get(&a.key)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let item: ZoteroItem = blocking(move || client.get(&a.key)).await?;
         if want_compact {
             ok_json(&CompactItem::from_item(&item))
         } else {
@@ -294,7 +344,8 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let want_compact = a.compact;
-        let items = blocking(move || inner.client.recent(a.n)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let items = blocking(move || client.recent(a.n)).await?;
         if want_compact {
             let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
             ok_json(&compact)
@@ -309,7 +360,8 @@ impl ZoteroServer {
         Parameters(a): Parameters<KeyArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let v = blocking(move || inner.client.children(&a.key)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let v = blocking(move || client.children(&a.key)).await?;
         ok_json(&v)
     }
 
@@ -321,7 +373,8 @@ impl ZoteroServer {
         Parameters(a): Parameters<KeyArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let children = blocking(move || inner.client.children(&a.key)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let children = blocking(move || client.children(&a.key)).await?;
         ok_json(&filter_annotations(&children))
     }
 
@@ -330,7 +383,8 @@ impl ZoteroServer {
     )]
     async fn notes(&self, Parameters(a): Parameters<KeyArgs>) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let children = blocking(move || inner.client.children(&a.key)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let children = blocking(move || client.children(&a.key)).await?;
         ok_json(&filter_notes(&children))
     }
 
@@ -343,14 +397,15 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let key_for_err = a.key.clone();
+        let client = pick_client(&inner.client, a.library);
         let result = blocking(move || -> anyhow::Result<Option<FullText>> {
             /* Try the key as-is: works if it already points at an attachment. */
-            if let Some(ft) = inner.client.fulltext(&a.key)? {
+            if let Some(ft) = client.fulltext(&a.key)? {
                 return Ok(Some(ft));
             }
             /* Otherwise treat it as a parent and look for a PDF child. Fall
             back to any attachment if no PDF is present. */
-            let children = inner.client.children(&a.key)?;
+            let children = client.children(&a.key)?;
             let pdf = children.iter().find(|c| {
                 c.get("data")
                     .and_then(|d| d.get("itemType"))
@@ -369,7 +424,7 @@ impl ZoteroServer {
             });
             for candidate in pdf.into_iter().chain(any_attach.into_iter()) {
                 if let Some(k) = candidate.get("key").and_then(|k| k.as_str()) {
-                    if let Some(ft) = inner.client.fulltext(k)? {
+                    if let Some(ft) = client.fulltext(k)? {
                         return Ok(Some(ft));
                     }
                 }
@@ -399,15 +454,19 @@ impl ZoteroServer {
             return Err(McpError::invalid_params("keys must not be empty", None));
         }
         let inner = self.inner.clone();
-        let body =
-            blocking(move || inner.client.export_citation(&a.keys, a.format.as_str())).await?;
+        let client = pick_client(&inner.client, a.library);
+        let body = blocking(move || client.export_citation(&a.keys, a.format.as_str())).await?;
         ok_text(body)
     }
 
     #[tool(description = "List all collections in the library.")]
-    async fn collections(&self) -> Result<CallToolResult, McpError> {
+    async fn collections(
+        &self,
+        Parameters(a): Parameters<LibraryOnlyArgs>,
+    ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let cols = blocking(move || inner.client.collections()).await?;
+        let client = pick_client(&inner.client, a.library);
+        let cols = blocking(move || client.collections()).await?;
         let compact: Vec<_> = cols
             .iter()
             .map(|c| json!({"key": c.key, "name": c.data.name}))
@@ -424,7 +483,8 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let want_compact = a.compact;
-        let items = blocking(move || inner.client.collection_items(&a.id)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let items = blocking(move || client.collection_items(&a.id)).await?;
         if !want_compact {
             return ok_json(&items);
         }
@@ -433,9 +493,13 @@ impl ZoteroServer {
     }
 
     #[tool(description = "List every tag in the library.")]
-    async fn tags(&self) -> Result<CallToolResult, McpError> {
+    async fn tags(
+        &self,
+        Parameters(a): Parameters<LibraryOnlyArgs>,
+    ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let v = blocking(move || inner.client.tags()).await?;
+        let client = pick_client(&inner.client, a.library);
+        let v = blocking(move || client.tags()).await?;
         ok_json(&v)
     }
 
@@ -448,8 +512,9 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let storage = inner.storage_root.clone();
+        let client = pick_client(&inner.client, a.library);
         let v = blocking(move || -> anyhow::Result<serde_json::Value> {
-            let children = inner.client.children(&a.key)?;
+            let children = client.children(&a.key)?;
             let mut out = Vec::new();
             for c in &children {
                 let it = c
@@ -493,7 +558,8 @@ impl ZoteroServer {
         Parameters(a): Parameters<DoiArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let v = blocking(move || inner.client.add_doi(&a.doi)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let v = blocking(move || client.add_doi(&a.doi)).await?;
         ok_json(&v)
     }
 
@@ -505,7 +571,8 @@ impl ZoteroServer {
         Parameters(a): Parameters<UrlArgs>,
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
-        let v = blocking(move || inner.client.add_url(&a.url)).await?;
+        let client = pick_client(&inner.client, a.library);
+        let v = blocking(move || client.add_url(&a.url)).await?;
         ok_json(&v)
     }
 
@@ -518,6 +585,7 @@ impl ZoteroServer {
     ) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
         let dry_run = a.dry_run;
+        let client = pick_client(&inner.client, a.library);
         let result: String = blocking(move || -> anyhow::Result<String> {
             let (target_key, source_key) = match &a.keep {
                 Some(k) if k == &a.key1 => (a.key1.clone(), a.key2.clone()),
@@ -526,8 +594,8 @@ impl ZoteroServer {
                 None => (a.key1.clone(), a.key2.clone()),
             };
 
-            let target = inner.client.get(&target_key)?;
-            let source = inner.client.get(&source_key)?;
+            let target = client.get(&target_key)?;
+            let source = client.get(&source_key)?;
 
             let reject = ["attachment", "note", "annotation"];
             for (label, item) in [("target", &target), ("source", &source)] {
@@ -544,7 +612,7 @@ impl ZoteroServer {
             }
 
             let merged_data = merge::reconcile_items(&target, &source);
-            let source_children = inner.client.children(&source_key)?;
+            let source_children = client.children(&source_key)?;
 
             if dry_run {
                 return Ok(merge::build_dry_run_report(
@@ -555,9 +623,7 @@ impl ZoteroServer {
                 ));
             }
 
-            inner
-                .client
-                .patch_item(&target_key, target.version, &merged_data)?;
+            client.patch_item(&target_key, target.version, &merged_data)?;
             for child in &source_children {
                 let child_key = child["key"]
                     .as_str()
@@ -566,12 +632,10 @@ impl ZoteroServer {
                     .as_u64()
                     .ok_or_else(|| anyhow::anyhow!("child missing version"))?;
                 let reparent = json!({"parentItem": target_key});
-                inner
-                    .client
-                    .patch_item(child_key, child_version, &reparent)?;
+                client.patch_item(child_key, child_version, &reparent)?;
             }
-            let source_fresh = inner.client.get(&source_key)?;
-            inner.client.trash_item(&source_key, source_fresh.version)?;
+            let source_fresh = client.get(&source_key)?;
+            client.trash_item(&source_key, source_fresh.version)?;
 
             Ok(format!(
                 "merged {} into {} ({} child item(s) re-parented; source moved to trash)",

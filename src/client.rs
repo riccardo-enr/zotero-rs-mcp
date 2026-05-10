@@ -13,11 +13,42 @@ Uses a synchronous HTTP client (minreq) — each CLI invocation makes exactly
 one request to localhost so async provides no benefit and only adds runtime
 cold-start overhead. minreq without TLS keeps the dependency tree minimal. */
 
+#[derive(Clone)]
 pub struct ZoteroClient {
     base: String,
     api_key: Option<String>,
     user_id: Option<u64>,
     library_type: String,
+}
+
+/* Per-call override for which Zotero library a tool targets. Mirrors the
+two URL forms the API accepts: /users/<id> and /groups/<id>. id=0 is the
+local logged-in user alias, matching the existing config-default behavior. */
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryKind {
+    User,
+    Group,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+pub struct LibraryRef {
+    #[serde(rename = "type")]
+    pub kind: LibraryKind,
+    pub id: u64,
+}
+
+impl LibraryKind {
+    fn as_config_str(self) -> &'static str {
+        match self {
+            LibraryKind::User => "user",
+            LibraryKind::Group => "group",
+        }
+    }
 }
 
 impl ZoteroClient {
@@ -88,6 +119,17 @@ impl ZoteroClient {
             );
         }
         Ok(resp.as_str().context("reading response body")?.to_string())
+    }
+
+    /* Return a clone of this client targeting a different library. The
+    underlying HTTP client is stateless, so the per-call override is just
+    a swap of the user_id + library_type fields. Tool handlers branch once
+    on the optional `library` arg and call methods on the resulting client. */
+    pub fn with_library(&self, lib: LibraryRef) -> Self {
+        let mut c = self.clone();
+        c.user_id = Some(lib.id);
+        c.library_type = lib.kind.as_config_str().to_string();
+        c
     }
 
     /* Build the library-scoped path prefix, e.g. /users/123 or /groups/456 */
