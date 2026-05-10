@@ -230,6 +230,23 @@ impl ZoteroClient {
         serde_json::from_str(&body).context("parsing collections")
     }
 
+    /* POST /collections — Zotero's write endpoint expects an array of objects
+    and replies with a write-response envelope: { successful, unchanged,
+    failed }. We wrap a single-element create here; failed[0], if present,
+    surfaces as an anyhow error with Zotero's code/message. */
+    pub fn create_collection(&self, name: &str, parent: Option<&str>) -> Result<ZoteroCollection> {
+        let lib = self.lib_path();
+        let url = format!("{}{}/collections?v={API_VERSION}", self.base, lib);
+        let mut obj = serde_json::Map::new();
+        obj.insert("name".into(), Value::String(name.to_string()));
+        if let Some(p) = parent {
+            obj.insert("parentCollection".into(), Value::String(p.to_string()));
+        }
+        let payload = Value::Array(vec![Value::Object(obj)]);
+        let body = self.post_json(&url, &payload)?;
+        parse_create_collection_response(&body)
+    }
+
     pub fn collection_items(&self, id: &str) -> Result<Vec<ZoteroItem>> {
         let lib = self.lib_path();
         let url = format!(
@@ -342,6 +359,28 @@ impl ZoteroClient {
         let resp_body = resp.as_str().context("reading response body")?;
         serde_json::from_str(resp_body).context("parsing add url response")
     }
+}
+
+/* Parse Zotero's write-response envelope for a single-create POST. The
+envelope shape is { successful: { "0": {key, version, data: {...}} },
+unchanged: {}, failed: { "0": {code, message} } }. We reject failed[0]
+with an anyhow error and decode successful[0] as a ZoteroCollection. */
+fn parse_create_collection_response(body: &str) -> Result<ZoteroCollection> {
+    let v: Value = serde_json::from_str(body).context("parsing create_collection response")?;
+    if let Some(failed) = v.get("failed").and_then(|f| f.get("0")) {
+        let code = failed.get("code").and_then(|c| c.as_u64()).unwrap_or(0);
+        let message = failed
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("(no message)");
+        anyhow::bail!("Zotero create_collection failed (code {code}): {message}");
+    }
+    let entry = v
+        .get("successful")
+        .and_then(|s| s.get("0"))
+        .ok_or_else(|| anyhow::anyhow!("Zotero response missing successful[0]: {body}"))?;
+    serde_json::from_value::<ZoteroCollection>(entry.clone())
+        .context("parsing successful[0] as ZoteroCollection")
 }
 
 fn pluralise(s: &str) -> &str {
