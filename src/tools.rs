@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::client::ZoteroClient;
 use crate::config::Config;
 use crate::merge;
-use crate::types::{CompactItem, ZoteroItem};
+use crate::types::{CompactItem, FullText, ZoteroItem};
 
 /* ------------------------------------------------------------------ */
 /*  Parameter structs                                                   */
@@ -208,6 +208,60 @@ impl ZoteroServer {
         ok_json(&v)
     }
 
+    #[tool(
+        description = "Return the indexed full text of an item's primary PDF attachment. Accepts either a parent item key (resolves to its first PDF attachment) or an attachment key directly. Returns { content, indexedChars, totalChars, indexedPages, totalPages } -- PDFs populate the page counters and zero the char counters; plaintext attachments do the inverse. Errors when the item has no indexed attachment."
+    )]
+    async fn fulltext(
+        &self,
+        Parameters(a): Parameters<KeyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let key_for_err = a.key.clone();
+        let result = blocking(move || -> anyhow::Result<Option<FullText>> {
+            /* Try the key as-is: works if it already points at an attachment. */
+            if let Some(ft) = inner.client.fulltext(&a.key)? {
+                return Ok(Some(ft));
+            }
+            /* Otherwise treat it as a parent and look for a PDF child. Fall
+            back to any attachment if no PDF is present. */
+            let children = inner.client.children(&a.key)?;
+            let pdf = children.iter().find(|c| {
+                c.get("data")
+                    .and_then(|d| d.get("itemType"))
+                    .and_then(|t| t.as_str())
+                    == Some("attachment")
+                    && c.get("data")
+                        .and_then(|d| d.get("contentType"))
+                        .and_then(|t| t.as_str())
+                        == Some("application/pdf")
+            });
+            let any_attach = children.iter().find(|c| {
+                c.get("data")
+                    .and_then(|d| d.get("itemType"))
+                    .and_then(|t| t.as_str())
+                    == Some("attachment")
+            });
+            for candidate in pdf.into_iter().chain(any_attach.into_iter()) {
+                if let Some(k) = candidate.get("key").and_then(|k| k.as_str()) {
+                    if let Some(ft) = inner.client.fulltext(k)? {
+                        return Ok(Some(ft));
+                    }
+                }
+            }
+            Ok(None)
+        })
+        .await?;
+        match result {
+            Some(ft) => ok_json(&ft),
+            None => Err(McpError::invalid_params(
+                format!(
+                    "item {key_for_err} has no indexed attachment fulltext (Zotero may need to (re)index it)"
+                ),
+                None,
+            )),
+        }
+    }
+
     #[tool(description = "List all collections in the library.")]
     async fn collections(&self) -> Result<CallToolResult, McpError> {
         let inner = self.inner.clone();
@@ -396,7 +450,7 @@ impl ServerHandler for ZoteroServer {
             .with_instructions(
                 "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
-             children, collections, collection_items, tags, attachment_path. \
+             children, collections, collection_items, tags, attachment_path, fulltext. \
              Mutating tools: add_doi, add_url, merge_items.",
             )
     }
