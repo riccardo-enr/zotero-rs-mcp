@@ -150,6 +150,22 @@ pub struct ExportCitationArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RenderCitationArgs {
+    /// One or more Zotero item keys to render in a single bibliography.
+    pub keys: Vec<String>,
+    /// CSL style name as known to Zotero (e.g. "ieee", "apa",
+    /// "chicago-author-date"). Defaults to "ieee".
+    #[serde(default = "default_citation_style")]
+    pub style: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+fn default_citation_style() -> String {
+    "ieee".to_string()
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetArgs {
     /// Zotero item key
     pub key: String,
@@ -612,6 +628,22 @@ impl ZoteroServer {
         let inner = self.inner.clone();
         let client = pick_client(&inner.client, a.library);
         let body = blocking(move || client.export_citation(&a.keys, a.format.as_str())).await?;
+        ok_text(body)
+    }
+
+    #[tool(
+        description = "Render a human-readable bibliography for one or more Zotero items in the given CSL style (defaults to 'ieee'). Returns an HTML string from Zotero's `format=bib` endpoint -- a csl-bib-body wrapper around per-entry csl-entry divs. All keys are fetched in a single round-trip."
+    )]
+    async fn render_citation(
+        &self,
+        Parameters(a): Parameters<RenderCitationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if a.keys.is_empty() {
+            return Err(McpError::invalid_params("keys must not be empty", None));
+        }
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let body = blocking(move || client.render_citation(&a.keys, &a.style)).await?;
         ok_text(body)
     }
 
@@ -1347,6 +1379,26 @@ mod tests {
         assert_eq!(a.name, "Foo");
         assert!(a.parent.is_none());
         assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn render_citation_args_default_style_is_ieee() {
+        let a: RenderCitationArgs = serde_json::from_value(json!({"keys": ["ABC"]})).unwrap();
+        assert_eq!(a.style, "ieee");
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn render_citation_args_full_payload() {
+        let a: RenderCitationArgs = serde_json::from_value(json!({
+            "keys": ["ABC", "DEF"],
+            "style": "apa",
+            "library": {"type": "group", "id": 1},
+        }))
+        .unwrap();
+        assert_eq!(a.keys, vec!["ABC".to_string(), "DEF".to_string()]);
+        assert_eq!(a.style, "apa");
+        assert!(a.library.is_some());
     }
 
     #[test]
