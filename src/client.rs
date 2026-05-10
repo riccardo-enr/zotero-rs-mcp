@@ -158,6 +158,26 @@ impl ZoteroClient {
     }
 
     /* ------------------------------------------------------------------ */
+    /*  Citation export                                                     */
+    /* ------------------------------------------------------------------ */
+
+    /* GET /items?itemKey=K1,K2,...&format=<fmt>. The Zotero API serves all
+    requested keys in a single round-trip and emits the chosen format
+    verbatim (BibTeX/BibLaTeX/RIS as text, CSL JSON as a JSON array). */
+    pub fn export_citation(&self, keys: &[String], format: &str) -> Result<String> {
+        let lib = self.lib_path();
+        let joined = keys.join(",");
+        let url = format!(
+            "{}{}/items?itemKey={}&format={}&v={API_VERSION}",
+            self.base,
+            lib,
+            encode(&joined),
+            format
+        );
+        self.get_json(&url)
+    }
+
+    /* ------------------------------------------------------------------ */
     /*  Collections                                                         */
     /* ------------------------------------------------------------------ */
 

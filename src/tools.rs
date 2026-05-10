@@ -83,6 +83,34 @@ pub struct MergeArgs {
     pub keep: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CitationFormat {
+    Bibtex,
+    Biblatex,
+    Csljson,
+    Ris,
+}
+
+impl CitationFormat {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Bibtex => "bibtex",
+            Self::Biblatex => "biblatex",
+            Self::Csljson => "csljson",
+            Self::Ris => "ris",
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportCitationArgs {
+    /// One or more Zotero item keys. All keys are fetched in a single API round-trip.
+    pub keys: Vec<String>,
+    /// Citation export format: bibtex, biblatex, csljson, or ris.
+    pub format: CitationFormat,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetArgs {
     /// Zotero item key
@@ -260,6 +288,22 @@ impl ZoteroServer {
                 None,
             )),
         }
+    }
+
+    #[tool(
+        description = "Export citations for one or more Zotero items in a chosen format. Accepts bibtex / biblatex / ris (returned as text) or csljson (returned as raw JSON text). All keys are fetched in a single API round-trip."
+    )]
+    async fn export_citation(
+        &self,
+        Parameters(a): Parameters<ExportCitationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if a.keys.is_empty() {
+            return Err(McpError::invalid_params("keys must not be empty", None));
+        }
+        let inner = self.inner.clone();
+        let body =
+            blocking(move || inner.client.export_citation(&a.keys, a.format.as_str())).await?;
+        ok_text(body)
     }
 
     #[tool(description = "List all collections in the library.")]
@@ -450,8 +494,52 @@ impl ServerHandler for ZoteroServer {
             .with_instructions(
                 "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
-             children, collections, collection_items, tags, attachment_path, fulltext. \
-             Mutating tools: add_doi, add_url, merge_items.",
+             children, collections, collection_items, tags, attachment_path, fulltext, \
+             export_citation. Mutating tools: add_doi, add_url, merge_items.",
             )
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Tests                                                               */
+/* ------------------------------------------------------------------ */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn citation_format_parses_lowercase_variants() {
+        for (s, want) in [
+            ("\"bibtex\"", CitationFormat::Bibtex),
+            ("\"biblatex\"", CitationFormat::Biblatex),
+            ("\"csljson\"", CitationFormat::Csljson),
+            ("\"ris\"", CitationFormat::Ris),
+        ] {
+            let got: CitationFormat = serde_json::from_str(s).unwrap();
+            assert_eq!(got.as_str(), want.as_str());
+        }
+    }
+
+    #[test]
+    fn citation_format_rejects_unknown() {
+        let err = serde_json::from_str::<CitationFormat>("\"json\"");
+        assert!(err.is_err(), "expected unknown format to be rejected");
+    }
+
+    #[test]
+    fn citation_format_as_str_is_api_token() {
+        assert_eq!(CitationFormat::Bibtex.as_str(), "bibtex");
+        assert_eq!(CitationFormat::Biblatex.as_str(), "biblatex");
+        assert_eq!(CitationFormat::Csljson.as_str(), "csljson");
+        assert_eq!(CitationFormat::Ris.as_str(), "ris");
+    }
+
+    #[test]
+    fn export_citation_args_accepts_multi_key() {
+        let v = serde_json::json!({"keys": ["AAA", "BBB"], "format": "bibtex"});
+        let a: ExportCitationArgs = serde_json::from_value(v).unwrap();
+        assert_eq!(a.keys, vec!["AAA".to_string(), "BBB".to_string()]);
+        assert_eq!(a.format.as_str(), "bibtex");
     }
 }
