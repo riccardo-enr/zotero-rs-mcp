@@ -224,6 +224,34 @@ pub struct SetTagsArgs {
     pub library: Option<LibraryRef>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrashListArgs {
+    /// If true (default), return compact records. Otherwise full ZoteroItem records.
+    #[serde(default = "default_true")]
+    pub compact: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RestoreArgs {
+    /// Zotero item key to restore from trash.
+    pub key: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EmptyTrashArgs {
+    /// Must be true. Guard against accidental wipe -- no default.
+    pub confirm: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
 /* Pure helper: compute the next `data.tags` array for an item-tag mutation.
 Tag matching is case-sensitive (matches Zotero's native tag-store behavior).
 Returns the new list plus a `changed` flag so the caller can short-circuit
@@ -809,6 +837,70 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "List items in the trash (deleted=1). Compact records by default (key, title, type, date, authors); set compact=false for full ZoteroItem records."
+    )]
+    async fn trash_list(
+        &self,
+        Parameters(a): Parameters<TrashListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let items = blocking(move || client.trash_list()).await?;
+        if a.compact {
+            let compact: Vec<CompactItem> = items.iter().map(CompactItem::from_item).collect();
+            ok_json(&compact)
+        } else {
+            ok_json(&items)
+        }
+    }
+
+    #[tool(
+        description = "Restore a single item from the trash (PATCH deleted=0). Returns { key, restored: true } on success."
+    )]
+    async fn restore(
+        &self,
+        Parameters(a): Parameters<RestoreArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let key = a.key.clone();
+        blocking(move || {
+            let item = client.get(&a.key)?;
+            client.restore_item(&a.key, item.version)
+        })
+        .await?;
+        ok_json(&serde_json::json!({ "key": key, "restored": true }))
+    }
+
+    #[tool(
+        description = "Permanently delete every item currently in the trash. Requires confirm=true; rejects otherwise. Returns { deleted_count }. Per-item DELETE with optimistic concurrency -- a concurrent edit to a trashed item surfaces as a version-conflict error."
+    )]
+    async fn empty_trash(
+        &self,
+        Parameters(a): Parameters<EmptyTrashArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !a.confirm {
+            return Err(McpError::invalid_params(
+                "empty_trash requires confirm=true to prevent accidental wipes".to_string(),
+                None,
+            ));
+        }
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let count = blocking(move || -> anyhow::Result<usize> {
+            let items = client.trash_list()?;
+            let mut n = 0usize;
+            for it in &items {
+                client.delete_item(&it.key, it.version)?;
+                n += 1;
+            }
+            Ok(n)
+        })
+        .await?;
+        ok_json(&serde_json::json!({ "deleted_count": count }))
+    }
+
+    #[tool(
         description = "Create a new collection in the library. Optional `parent` key nests the new collection under an existing one; omit to create at the root. Returns { key, name, parent_collection }."
     )]
     async fn create_collection(
@@ -1255,6 +1347,39 @@ mod tests {
         assert_eq!(a.name, "Foo");
         assert!(a.parent.is_none());
         assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn trash_list_args_compact_default_is_true() {
+        let a: TrashListArgs = serde_json::from_value(json!({})).unwrap();
+        assert!(a.compact);
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn trash_list_args_compact_can_be_disabled() {
+        let a: TrashListArgs = serde_json::from_value(json!({"compact": false})).unwrap();
+        assert!(!a.compact);
+    }
+
+    #[test]
+    fn restore_args_minimal() {
+        let a: RestoreArgs = serde_json::from_value(json!({"key": "ABC123"})).unwrap();
+        assert_eq!(a.key, "ABC123");
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn empty_trash_args_require_confirm() {
+        // confirm has no default -- payload without it must fail.
+        let r: Result<EmptyTrashArgs, _> = serde_json::from_value(json!({}));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn empty_trash_args_with_confirm_true() {
+        let a: EmptyTrashArgs = serde_json::from_value(json!({"confirm": true})).unwrap();
+        assert!(a.confirm);
     }
 
     #[test]
