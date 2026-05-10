@@ -171,6 +171,58 @@ fn map_err(e: anyhow::Error) -> McpError {
     McpError::internal_error(format!("{e:#}"), None)
 }
 
+/* Filter a `children` payload down to annotation entries with a compact
+shape: { key, type, text, comment, page_label, color }. Source fields:
+data.annotationType / annotationText / annotationComment /
+annotationPageLabel / annotationColor. */
+fn filter_annotations(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    children
+        .iter()
+        .filter(|c| {
+            c.get("data")
+                .and_then(|d| d.get("itemType"))
+                .and_then(|t| t.as_str())
+                == Some("annotation")
+        })
+        .map(|c| {
+            let data = c.get("data");
+            let g = |k: &str| -> serde_json::Value {
+                data.and_then(|d| d.get(k)).cloned().unwrap_or(json!(""))
+            };
+            json!({
+                "key": c.get("key").cloned().unwrap_or(json!("")),
+                "type": g("annotationType"),
+                "text": g("annotationText"),
+                "comment": g("annotationComment"),
+                "page_label": g("annotationPageLabel"),
+                "color": g("annotationColor"),
+            })
+        })
+        .collect()
+}
+
+/* Filter a `children` payload down to note entries with shape
+{ key, note, parent_item }. */
+fn filter_notes(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    children
+        .iter()
+        .filter(|c| {
+            c.get("data")
+                .and_then(|d| d.get("itemType"))
+                .and_then(|t| t.as_str())
+                == Some("note")
+        })
+        .map(|c| {
+            let data = c.get("data");
+            json!({
+                "key": c.get("key").cloned().unwrap_or(json!("")),
+                "note": data.and_then(|d| d.get("note")).cloned().unwrap_or(json!("")),
+                "parent_item": data.and_then(|d| d.get("parentItem")).cloned().unwrap_or(json!("")),
+            })
+        })
+        .collect()
+}
+
 async fn blocking<F, R>(f: F) -> Result<R, McpError>
 where
     F: FnOnce() -> anyhow::Result<R> + Send + 'static,
@@ -234,6 +286,27 @@ impl ZoteroServer {
         let inner = self.inner.clone();
         let v = blocking(move || inner.client.children(&a.key)).await?;
         ok_json(&v)
+    }
+
+    #[tool(
+        description = "List annotations (highlights, margin notes) attached to an item. Returns compact records { key, type, text, comment, page_label, color }."
+    )]
+    async fn annotations(
+        &self,
+        Parameters(a): Parameters<KeyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let children = blocking(move || inner.client.children(&a.key)).await?;
+        ok_json(&filter_annotations(&children))
+    }
+
+    #[tool(
+        description = "List standalone child notes of an item. Returns { key, note (HTML), parent_item }."
+    )]
+    async fn notes(&self, Parameters(a): Parameters<KeyArgs>) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let children = blocking(move || inner.client.children(&a.key)).await?;
+        ok_json(&filter_notes(&children))
     }
 
     #[tool(
@@ -495,7 +568,8 @@ impl ServerHandler for ZoteroServer {
                 "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path, fulltext, \
-             export_citation. Mutating tools: add_doi, add_url, merge_items.",
+             export_citation, annotations, notes. Mutating tools: add_doi, add_url, \
+             merge_items.",
             )
     }
 }
@@ -541,5 +615,98 @@ mod tests {
         let a: ExportCitationArgs = serde_json::from_value(v).unwrap();
         assert_eq!(a.keys, vec!["AAA".to_string(), "BBB".to_string()]);
         assert_eq!(a.format.as_str(), "bibtex");
+    }
+
+    /* annotations / notes ------------------------------------------- */
+
+    fn sample_children() -> Vec<serde_json::Value> {
+        serde_json::json!([
+            {
+                "key": "ANN1KEY1",
+                "data": {
+                    "itemType": "annotation",
+                    "parentItem": "PARENT01",
+                    "annotationType": "highlight",
+                    "annotationText": "key insight",
+                    "annotationComment": "important",
+                    "annotationPageLabel": "12",
+                    "annotationColor": "#ffd400"
+                }
+            },
+            {
+                "key": "ANN2KEY2",
+                "data": {
+                    "itemType": "annotation",
+                    "parentItem": "PARENT01",
+                    "annotationType": "note",
+                    "annotationComment": "margin remark",
+                    "annotationPageLabel": "13",
+                    "annotationColor": "#5fb236"
+                }
+            },
+            {
+                "key": "NOTE1KEY",
+                "data": {
+                    "itemType": "note",
+                    "parentItem": "PARENT01",
+                    "note": "<p>standalone child note</p>"
+                }
+            },
+            {
+                "key": "ATTACHKY",
+                "data": {
+                    "itemType": "attachment",
+                    "parentItem": "PARENT01",
+                    "contentType": "application/pdf",
+                    "filename": "paper.pdf"
+                }
+            }
+        ])
+        .as_array()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn compact_annotations_filters_and_shapes() {
+        let children = sample_children();
+        let out = filter_annotations(&children);
+        assert_eq!(out.len(), 2);
+
+        let a = &out[0];
+        assert_eq!(a["key"], "ANN1KEY1");
+        assert_eq!(a["type"], "highlight");
+        assert_eq!(a["text"], "key insight");
+        assert_eq!(a["comment"], "important");
+        assert_eq!(a["page_label"], "12");
+        assert_eq!(a["color"], "#ffd400");
+
+        let b = &out[1];
+        assert_eq!(b["key"], "ANN2KEY2");
+        assert_eq!(b["type"], "note");
+        /* annotation with no annotationText still produces an entry */
+        assert!(b.get("text").is_some());
+        assert_eq!(b["comment"], "margin remark");
+    }
+
+    #[test]
+    fn compact_notes_filters_and_shapes() {
+        let children = sample_children();
+        let out = filter_notes(&children);
+        assert_eq!(out.len(), 1);
+        let n = &out[0];
+        assert_eq!(n["key"], "NOTE1KEY");
+        assert_eq!(n["note"], "<p>standalone child note</p>");
+        assert_eq!(n["parent_item"], "PARENT01");
+    }
+
+    #[test]
+    fn compact_annotations_skips_non_annotations() {
+        let children = sample_children();
+        let out = filter_annotations(&children);
+        for entry in &out {
+            assert_ne!(entry["key"], "NOTE1KEY");
+            assert_ne!(entry["key"], "ATTACHKY");
+        }
     }
 }
