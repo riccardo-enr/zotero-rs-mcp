@@ -700,6 +700,46 @@ mod tests {
         assert_eq!(n["parent_item"], "PARENT01");
     }
 
+    /* compact toggle on search / recent / collection_items --------- */
+
+    #[test]
+    fn search_args_compact_default_is_true() {
+        let a: SearchArgs = serde_json::from_value(json!({"query": "foo"})).unwrap();
+        assert!(a.compact, "compact must default to true");
+    }
+
+    #[test]
+    fn search_args_compact_can_be_disabled() {
+        let a: SearchArgs =
+            serde_json::from_value(json!({"query": "foo", "compact": false})).unwrap();
+        assert!(!a.compact);
+    }
+
+    #[test]
+    fn recent_args_compact_default_is_true() {
+        let a: RecentArgs = serde_json::from_value(json!({})).unwrap();
+        assert!(a.compact, "compact must default to true");
+    }
+
+    #[test]
+    fn recent_args_compact_can_be_disabled() {
+        let a: RecentArgs = serde_json::from_value(json!({"compact": false})).unwrap();
+        assert!(!a.compact);
+    }
+
+    #[test]
+    fn collection_args_compact_default_is_true() {
+        let a: CollectionArgs = serde_json::from_value(json!({"id": "ABCDEFGH"})).unwrap();
+        assert!(a.compact, "compact must default to true");
+    }
+
+    #[test]
+    fn collection_args_compact_can_be_disabled() {
+        let a: CollectionArgs =
+            serde_json::from_value(json!({"id": "ABCDEFGH", "compact": false})).unwrap();
+        assert!(!a.compact);
+    }
+
     #[test]
     fn compact_annotations_skips_non_annotations() {
         let children = sample_children();
