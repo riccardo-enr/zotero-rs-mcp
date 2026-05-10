@@ -73,11 +73,11 @@ async fn mcp_tools_list_and_recent_against_recorded_fixture() {
         .mount(&server)
         .await;
 
-    let api_base = format!("{}", server.uri()); // e.g. http://127.0.0.1:PORT
     /* The client appends paths like `/users/0/items` to ZOTERO_API_BASE
     verbatim, so the env var should NOT include a trailing /api segment
     for the test stub -- we just expose the bare wiremock URL and mount
     paths that match what ZoteroClient builds. */
+    let api_base = server.uri(); // e.g. http://127.0.0.1:PORT
 
     /* 2. Spawn the binary in an isolated env ----------------------- */
     let tmp = tempfile::tempdir().unwrap();
@@ -199,7 +199,87 @@ async fn mcp_tools_list_and_recent_against_recorded_fixture() {
         ]
     );
 
-    /* 6. Tear down -------------------------------------------------- */
+    /* 6. resources/list ------------------------------------------- */
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"}),
+    )
+    .await;
+
+    let res_list = recv_id(&mut reader, 4).await;
+    let resources = res_list
+        .pointer("/result/resources")
+        .and_then(|v| v.as_array())
+        .expect("resources array");
+    let uris: Vec<&str> = resources
+        .iter()
+        .filter_map(|r| r.get("uri").and_then(|u| u.as_str()))
+        .collect();
+    assert!(
+        uris.contains(&"zotero://recent"),
+        "resources/list missing zotero://recent; got {uris:?}"
+    );
+
+    /* 7. resources/templates/list --------------------------------- */
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 5, "method": "resources/templates/list"}),
+    )
+    .await;
+
+    let tmpl_list = recv_id(&mut reader, 5).await;
+    let templates = tmpl_list
+        .pointer("/result/resourceTemplates")
+        .and_then(|v| v.as_array())
+        .expect("resourceTemplates array");
+    let tmpl_uris: Vec<&str> = templates
+        .iter()
+        .filter_map(|r| r.get("uriTemplate").and_then(|u| u.as_str()))
+        .collect();
+    assert!(
+        tmpl_uris.contains(&"zotero://item/{key}")
+            && tmpl_uris.contains(&"zotero://item/{key}/fulltext"),
+        "templates list missing item URIs; got {tmpl_uris:?}"
+    );
+
+    /* 8. resources/read zotero://recent --------------------------- */
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "resources/read",
+            "params": {"uri": "zotero://recent"}
+        }),
+    )
+    .await;
+
+    let read_resp = recv_id(&mut reader, 6).await;
+    let contents = read_resp
+        .pointer("/result/contents")
+        .and_then(|v| v.as_array())
+        .expect("contents array");
+    assert_eq!(contents.len(), 1);
+    let entry = &contents[0];
+    assert_eq!(
+        entry.get("uri").and_then(|v| v.as_str()),
+        Some("zotero://recent")
+    );
+    let body: Value = serde_json::from_str(
+        entry
+            .get("text")
+            .and_then(|v| v.as_str())
+            .expect("text body"),
+    )
+    .expect("recent body is JSON");
+    let arr = body.as_array().expect("recent body is array");
+    let keys: Vec<&str> = arr
+        .iter()
+        .filter_map(|i| i.get("key").and_then(|k| k.as_str()))
+        .collect();
+    assert_eq!(keys, vec!["AAAA1111", "BBBB2222"]);
+
+    /* 9. Tear down -------------------------------------------------- */
     let _ = stdin.shutdown().await;
     drop(stdin);
     let _ = timeout(Duration::from_secs(3), child.wait()).await;

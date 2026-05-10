@@ -1065,18 +1065,62 @@ fn mutate_collections(
 #[tool_handler]
 impl ServerHandler for ZoteroServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(
-                "Zotero MCP server. Talks to the local Zotero connector at \
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::from_build_env())
+        .with_protocol_version(ProtocolVersion::V_2024_11_05)
+        .with_instructions(
+            "Zotero MCP server. Talks to the local Zotero connector at \
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path, fulltext, \
              export_citation, render_citation, saved_searches, run_saved_search, \
              annotations, notes. Mutating tools: add_doi, add_url, merge_items, \
              add_to_collection, remove_from_collection, set_tags, create_collection, \
-             trash_list, restore, empty_trash.",
-            )
+             trash_list, restore, empty_trash. \
+             Resources: zotero://recent (recently added), \
+             zotero://item/<key> (full metadata), \
+             zotero://item/<key>/fulltext (indexed text).",
+        )
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            resources: crate::resources::static_resources(),
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult {
+            resource_templates: crate::resources::resource_templates(),
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let inner = self.inner.clone();
+        let uri = request.uri.clone();
+        tokio::task::spawn_blocking(move || crate::resources::read(&inner.client, &uri))
+            .await
+            .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     }
 }
 
