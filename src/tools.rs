@@ -224,6 +224,34 @@ pub struct SetTagsArgs {
     pub library: Option<LibraryRef>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrashListArgs {
+    /// If true (default), return compact records. Otherwise full ZoteroItem records.
+    #[serde(default = "default_true")]
+    pub compact: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RestoreArgs {
+    /// Zotero item key to restore from trash.
+    pub key: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EmptyTrashArgs {
+    /// Must be true. Guard against accidental wipe -- no default.
+    pub confirm: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
 /* Pure helper: compute the next `data.tags` array for an item-tag mutation.
 Tag matching is case-sensitive (matches Zotero's native tag-store behavior).
 Returns the new list plus a `changed` flag so the caller can short-circuit
@@ -1255,6 +1283,39 @@ mod tests {
         assert_eq!(a.name, "Foo");
         assert!(a.parent.is_none());
         assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn trash_list_args_compact_default_is_true() {
+        let a: TrashListArgs = serde_json::from_value(json!({})).unwrap();
+        assert!(a.compact);
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn trash_list_args_compact_can_be_disabled() {
+        let a: TrashListArgs = serde_json::from_value(json!({"compact": false})).unwrap();
+        assert!(!a.compact);
+    }
+
+    #[test]
+    fn restore_args_minimal() {
+        let a: RestoreArgs = serde_json::from_value(json!({"key": "ABC123"})).unwrap();
+        assert_eq!(a.key, "ABC123");
+        assert!(a.library.is_none());
+    }
+
+    #[test]
+    fn empty_trash_args_require_confirm() {
+        // confirm has no default -- payload without it must fail.
+        let r: Result<EmptyTrashArgs, _> = serde_json::from_value(json!({}));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn empty_trash_args_with_confirm_true() {
+        let a: EmptyTrashArgs = serde_json::from_value(json!({"confirm": true})).unwrap();
+        assert!(a.confirm);
     }
 
     #[test]
