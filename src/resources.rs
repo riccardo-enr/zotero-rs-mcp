@@ -156,7 +156,7 @@ fn resolve_fulltext(client: &ZoteroClient, key: &str) -> anyhow::Result<Option<F
             .and_then(|t| t.as_str())
             == Some("attachment")
     });
-    for candidate in pdf.into_iter().chain(any_attach.into_iter()) {
+    for candidate in pdf.into_iter().chain(any_attach) {
         if let Some(k) = candidate.get("key").and_then(|k| k.as_str()) {
             if let Some(ft) = client.fulltext(k)? {
                 return Ok(Some(ft));
@@ -179,7 +179,7 @@ mod tests {
     fn parse_item() {
         match parse_uri("zotero://item/ABCD1234") {
             Some(ParsedUri::Item { key }) => assert_eq!(key, "ABCD1234"),
-            other => panic!("expected Item, got {:?}", matches!(other, Some(_))),
+            other => panic!("expected Item, got {:?}", other.is_some()),
         }
     }
 
@@ -187,7 +187,7 @@ mod tests {
     fn parse_item_fulltext() {
         match parse_uri("zotero://item/ABCD1234/fulltext") {
             Some(ParsedUri::ItemFulltext { key }) => assert_eq!(key, "ABCD1234"),
-            other => panic!("expected ItemFulltext, got {:?}", matches!(other, Some(_))),
+            other => panic!("expected ItemFulltext, got {:?}", other.is_some()),
         }
     }
 
