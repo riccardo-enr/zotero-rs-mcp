@@ -3,7 +3,7 @@ use serde_json::Value;
 use urlencoding::encode;
 
 use crate::config::Config;
-use crate::types::{ZoteroCollection, ZoteroItem};
+use crate::types::{FullText, ZoteroCollection, ZoteroItem};
 
 const API_VERSION: &str = "3";
 const TRANSLATOR_URL: &str = "http://localhost:1969/web";
@@ -44,6 +44,30 @@ impl ZoteroClient {
             );
         }
         Ok(resp.as_str().context("reading response body")?.to_string())
+    }
+
+    /* Like get_json but maps a 404 response to Ok(None) so callers can
+    distinguish "no such resource" (e.g. an item without an indexed
+    fulltext) from other transport/API errors. */
+    fn get_json_opt(&self, url: &str) -> Result<Option<String>> {
+        let mut req = minreq::get(url).with_timeout(30);
+        if let Some(key) = &self.api_key {
+            req = req.with_header("Zotero-API-Key", key);
+        }
+        let resp = req.send().context("sending request")?;
+        if resp.status_code == 404 {
+            return Ok(None);
+        }
+        if resp.status_code >= 400 {
+            anyhow::bail!(
+                "Zotero API error {}: {}",
+                resp.status_code,
+                resp.as_str().unwrap_or_default()
+            );
+        }
+        Ok(Some(
+            resp.as_str().context("reading response body")?.to_string(),
+        ))
     }
 
     fn post_json(&self, url: &str, payload: &Value) -> Result<String> {
@@ -110,6 +134,27 @@ impl ZoteroClient {
         );
         let body = self.get_json(&url)?;
         serde_json::from_str(&body).context("parsing children")
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Indexed full text                                                   */
+    /* ------------------------------------------------------------------ */
+
+    /* GET /items/{key}/fulltext on an attachment item. Returns Ok(None)
+    when Zotero has no indexed fulltext for the attachment (HTTP 404). */
+    pub fn fulltext(&self, attachment_key: &str) -> Result<Option<FullText>> {
+        let lib = self.lib_path();
+        let url = format!(
+            "{}{}/items/{}/fulltext?v={API_VERSION}",
+            self.base, lib, attachment_key
+        );
+        match self.get_json_opt(&url)? {
+            None => Ok(None),
+            Some(body) => {
+                let ft: FullText = serde_json::from_str(&body).context("parsing fulltext")?;
+                Ok(Some(ft))
+            }
+        }
     }
 
     /* ------------------------------------------------------------------ */

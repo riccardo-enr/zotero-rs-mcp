@@ -106,6 +106,19 @@ pub struct ZoteroCollection {
     pub data: CollectionData,
 }
 
+/* Indexed full-text payload returned by GET /items/{key}/fulltext on an
+attachment item. `total_chars` may be absent on older Zotero versions; default
+to zero. `indexed_pages` / `total_pages` are intentionally omitted -- the
+acceptance criteria for issue #1 lists only content/indexedChars/totalChars. */
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FullText {
+    pub content: String,
+    #[serde(rename = "indexedChars")]
+    pub indexed_chars: u64,
+    #[serde(rename = "totalChars", default)]
+    pub total_chars: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +269,39 @@ mod tests {
         let serialized = serde_json::to_string(&item).unwrap();
         let item2: ZoteroItem = serde_json::from_str(&serialized).unwrap();
         assert_eq!(item2.key, "XYZ");
+    }
+
+    /* ---- FullText ---- */
+
+    #[test]
+    fn fulltext_deserializes_camelcase_payload() {
+        let json = r#"{
+            "content": "hello world",
+            "indexedChars": 11,
+            "totalChars": 42
+        }"#;
+        let ft: FullText = serde_json::from_str(json).unwrap();
+        assert_eq!(ft.content, "hello world");
+        assert_eq!(ft.indexed_chars, 11);
+        assert_eq!(ft.total_chars, 42);
+    }
+
+    #[test]
+    fn fulltext_total_chars_defaults_when_missing() {
+        let json = r#"{"content": "x", "indexedChars": 1}"#;
+        let ft: FullText = serde_json::from_str(json).unwrap();
+        assert_eq!(ft.total_chars, 0);
+    }
+
+    #[test]
+    fn fulltext_serializes_camelcase() {
+        let ft = FullText {
+            content: "abc".into(),
+            indexed_chars: 3,
+            total_chars: 3,
+        };
+        let s = serde_json::to_string(&ft).unwrap();
+        assert!(s.contains("\"indexedChars\":3"));
+        assert!(s.contains("\"totalChars\":3"));
     }
 }
