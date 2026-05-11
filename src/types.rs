@@ -371,7 +371,7 @@ mod tests {
         /* Multi-byte chars: each 'e' with combining acute is 2 bytes; use a
         sequence of multi-byte characters and ensure truncation respects char
         boundaries (does not panic, slices cleanly). */
-        let s: String = std::iter::repeat('e').take(600).collect::<String>() + &"a".repeat(10);
+        let s: String = "e".repeat(600) + &"a".repeat(10);
         let item = make_item_with_abstract(Some(&s));
         let c = CompactItem::from_item_with_cap(&item, 500);
         let got = c.abstract_note.unwrap();
