@@ -23,7 +23,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 dirs = "5"
-minreq = { version = "2", features = ["json-using-serde"] }
+minreq = { version = "2", features = ["json-using-serde", "https-rustls"] }
 urlencoding = "2"
 toml = "0.8"
 

@@ -200,6 +200,15 @@ pub struct CreateCollectionArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeleteCollectionArgs {
+    /// Collection key to delete (8-character alphanumeric).
+    pub key: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CollectionMembershipArgs {
     /// Zotero item key (8-character alphanumeric).
     pub key: String,
@@ -965,6 +974,20 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "Delete a collection by key. The collection is removed permanently (items remain in the library, only the membership link is dropped). Sub-collections are recursively deleted by Zotero. Returns { key, deleted: true }."
+    )]
+    async fn delete_collection(
+        &self,
+        Parameters(a): Parameters<DeleteCollectionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let key = a.key.clone();
+        blocking(move || client.delete_collection(&a.key)).await?;
+        ok_json(&serde_json::json!({ "key": key, "deleted": true }))
+    }
+
+    #[tool(
         description = "List user-defined saved searches in the library. Returns compact records [{ key, name }]. Use the key with `run_saved_search` to fetch matching items."
     )]
     async fn saved_searches(
@@ -1080,7 +1103,7 @@ impl ServerHandler for ZoteroServer {
              children, collections, collection_items, tags, attachment_path, fulltext, \
              export_citation, render_citation, saved_searches, run_saved_search, \
              annotations, notes. Mutating tools: add_doi, add_url, merge_items, \
-             add_to_collection, remove_from_collection, set_tags, create_collection, \
+             add_to_collection, remove_from_collection, set_tags, create_collection, delete_collection, \
              trash_list, restore, empty_trash. \
              Resources: zotero://recent (recently added), \
              zotero://item/<key> (full metadata), \

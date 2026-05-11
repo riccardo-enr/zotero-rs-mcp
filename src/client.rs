@@ -266,6 +266,41 @@ impl ZoteroClient {
         parse_create_collection_response(&body)
     }
 
+    /* DELETE /collections/{key} -- hard delete. Fetches the collection first
+    to obtain its version for the `If-Unmodified-Since-Version` header. 412
+    surfaces as a version conflict. The Zotero API recursively deletes
+    sub-collections, but items remain in the library (only the membership
+    link is removed). */
+    pub fn delete_collection(&self, key: &str) -> Result<()> {
+        let lib = self.lib_path();
+        let get_url = format!("{}{}/collections/{}?v={API_VERSION}", self.base, lib, key);
+        let body = self.get_json(&get_url)?;
+        let v: Value = serde_json::from_str(&body).context("parsing collection")?;
+        let version = v
+            .get("version")
+            .and_then(|x| x.as_u64())
+            .context("collection response missing version")?;
+        let del_url = format!("{}{}/collections/{}?v={API_VERSION}", self.base, lib, key);
+        let mut req = minreq::delete(&del_url)
+            .with_header("If-Unmodified-Since-Version", version.to_string())
+            .with_timeout(30);
+        if let Some(k) = &self.api_key {
+            req = req.with_header("Zotero-API-Key", k);
+        }
+        let resp = req.send().context("sending DELETE request")?;
+        if resp.status_code == 412 {
+            anyhow::bail!("collection was modified since fetch (version conflict) -- retry");
+        }
+        if resp.status_code >= 400 {
+            anyhow::bail!(
+                "Zotero API error {}: {}",
+                resp.status_code,
+                resp.as_str().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
     pub fn collection_items(&self, id: &str) -> Result<Vec<ZoteroItem>> {
         let lib = self.lib_path();
         let url = format!(
