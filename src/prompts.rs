@@ -121,12 +121,7 @@ pub fn render_context(item: &ZoteroItem) -> String {
     if let Some(it) = &d.item_type {
         out.push_str(&format!("Type: {it}\n"));
     }
-    /* Zotero returns the field as `DOI` (uppercase), which doesn't match
-    our camelCase `doi`. Fall back to the `extra` flatten map if needed. */
-    let doi = d
-        .doi
-        .as_deref()
-        .or_else(|| d.extra.get("DOI").and_then(|v| v.as_str()));
+    let doi = d.doi.as_deref();
     if let Some(doi) = doi {
         if !doi.is_empty() {
             out.push_str(&format!("DOI: {doi}\n"));

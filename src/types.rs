@@ -49,6 +49,7 @@ pub struct ItemData {
     pub tags: Vec<Tag>,
     #[serde(default)]
     pub collections: Vec<String>,
+    #[serde(rename = "DOI", skip_serializing_if = "Option::is_none")]
     pub doi: Option<String>,
     pub url: Option<String>,
     #[serde(flatten)]
@@ -415,6 +416,12 @@ mod tests {
         assert!(data.creators.is_empty());
         assert!(data.tags.is_empty());
         assert!(data.doi.is_none());
+    }
+
+    #[test]
+    fn item_data_reads_uppercase_doi() {
+        let data: ItemData = serde_json::from_str(r#"{"key": "A", "DOI": "10.1/x"}"#).unwrap();
+        assert_eq!(data.doi.as_deref(), Some("10.1/x"));
     }
 
     #[test]
