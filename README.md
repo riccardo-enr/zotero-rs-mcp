@@ -43,7 +43,7 @@ cargo install --path .
 | `collection_items`| Items inside a collection                                        |
 | `tags`            | Every tag in the library                                         |
 | `attachment_path` | Resolves the on-disk path of an item's attachments under `~/Zotero/storage` |
-| `add_doi`         | Add a `journalArticle` by DOI                                    |
+| `add_doi`         | Add an item by DOI (metadata via doi.org; skips duplicates)      |
 | `add_url`         | Add via Zotero translator (requires translator on port 1969)     |
 | `merge_items`     | Merge two top-level items; supports `dry_run` and `keep`         |
 
