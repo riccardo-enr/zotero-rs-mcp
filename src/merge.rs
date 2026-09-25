@@ -229,7 +229,7 @@ mod tests {
         source.data.doi = Some("10.1234/test".into());
 
         let merged = reconcile_items(&target, &source);
-        assert_eq!(merged["doi"], "10.1234/test");
+        assert_eq!(merged["DOI"], "10.1234/test");
     }
 
     #[test]
