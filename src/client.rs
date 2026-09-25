@@ -461,14 +461,36 @@ impl ZoteroClient {
     /*  Add items                                                           */
     /* ------------------------------------------------------------------ */
 
+    fn items_url(&self) -> String {
+        format!("{}{}/items?v={API_VERSION}", self.base, self.lib_path())
+    }
+
+    /* Neither the web nor the local API resolves DOIs server-side, so the
+    metadata comes from doi.org content negotiation (Crossref / DataCite). */
     pub fn add_doi(&self, doi: &str) -> Result<Value> {
-        let url = format!("{}/items?v={API_VERSION}", self.base);
-        let payload = serde_json::json!([{
-            "itemType": "journalArticle",
-            "DOI": doi
-        }]);
-        let body = self.post_json(&url, &payload)?;
-        serde_json::from_str(&body).context("parsing add doi response")
+        let doi = normalize_doi(doi);
+        let item = csl_to_zotero(&resolve_doi(doi)?, doi)?;
+        let title = item["title"].as_str().unwrap_or_default();
+        // ponytail: q= never matches the DOI field, so dedup misses items whose stored title differs
+        let existing = self.search(&strip_tags(title), 25)?.into_iter().find(|i| {
+            i.data
+                .doi
+                .as_deref()
+                .is_some_and(|d| normalize_doi(d).eq_ignore_ascii_case(doi))
+        });
+        if let Some(i) = existing {
+            return Ok(serde_json::json!({"key": i.key, "created": false}));
+        }
+        let body = self.post_json(&self.items_url(), &Value::Array(vec![item]))?;
+        let v: Value = serde_json::from_str(&body).context("parsing add doi response")?;
+        if let Some(f) = v.get("failed").and_then(|f| f.get("0")) {
+            anyhow::bail!("Zotero add_doi failed: {f}");
+        }
+        let key = v
+            .pointer("/successful/0/key")
+            .and_then(|k| k.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Zotero response missing successful[0]: {body}"))?;
+        Ok(serde_json::json!({"key": key, "created": true}))
     }
 
     pub fn add_url(&self, add_url: &str) -> Result<Value> {
@@ -513,6 +535,141 @@ fn parse_create_collection_response(body: &str) -> Result<ZoteroCollection> {
         .ok_or_else(|| anyhow::anyhow!("Zotero response missing successful[0]: {body}"))?;
     serde_json::from_value::<ZoteroCollection>(entry.clone())
         .context("parsing successful[0] as ZoteroCollection")
+}
+
+fn normalize_doi(doi: &str) -> &str {
+    let d = doi.trim();
+    [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+        "doi:",
+    ]
+    .iter()
+    .find_map(|p| d.strip_prefix(p))
+    .unwrap_or(d)
+}
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/* No Zotero-API-Key here: the request goes to doi.org, not Zotero. */
+fn resolve_doi(doi: &str) -> Result<Value> {
+    let resp = minreq::get(format!("https://doi.org/{doi}"))
+        .with_header("Accept", "application/vnd.citationstyles.csl+json")
+        .with_timeout(30)
+        .send()
+        .context("resolving DOI via doi.org")?;
+    if resp.status_code >= 400 {
+        anyhow::bail!("DOI {doi} did not resolve (doi.org {})", resp.status_code);
+    }
+    serde_json::from_str(resp.as_str()?)
+        .with_context(|| format!("doi.org returned no CSL-JSON for {doi}"))
+}
+
+/* CSL fields that are a string in some registries and an array in others. */
+fn csl_str(csl: &Value, key: &str) -> Option<String> {
+    let v = csl.get(key)?;
+    let s = match v {
+        Value::Array(a) => a.first()?.as_str()?.to_string(),
+        Value::Object(o) => o.get("name")?.as_str()?.to_string(),
+        Value::Number(n) => n.to_string(),
+        _ => v.as_str()?.to_string(),
+    };
+    (!s.is_empty()).then_some(s)
+}
+
+/* Zotero 400s on a field the item type lacks, so each type gets only its own
+venue fields. Crossref and the CSL spec name the types differently. */
+fn csl_to_zotero(csl: &Value, doi: &str) -> Result<Value> {
+    let title = csl_str(csl, "title").context("DOI metadata has no title")?;
+    let (item_type, venue): (&str, &[(&str, &str)]) =
+        match csl.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "proceedings-article" | "paper-conference" => (
+                "conferencePaper",
+                &[
+                    ("proceedingsTitle", "container-title"),
+                    ("conferenceName", "event"),
+                    ("conferenceName", "event-title"),
+                    ("volume", "volume"),
+                    ("pages", "page"),
+                    ("publisher", "publisher"),
+                ],
+            ),
+            "article" | "posted-content" => ("preprint", &[("repository", "publisher")]),
+            // ponytail: books, chapters, datasets land as journalArticle -- add types when one shows up
+            _ => (
+                "journalArticle",
+                &[
+                    ("publicationTitle", "container-title"),
+                    ("volume", "volume"),
+                    ("issue", "issue"),
+                    ("pages", "page"),
+                ],
+            ),
+        };
+    let creators: Vec<Value> = csl
+        .get("author")
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+        .map(|a| match (a.get("family"), a.get("literal")) {
+            (Some(f), _) => serde_json::json!({
+                "creatorType": "author",
+                "lastName": f,
+                "firstName": a.get("given").and_then(|g| g.as_str()).unwrap_or(""),
+            }),
+            (None, lit) => serde_json::json!({
+                "creatorType": "author",
+                "name": lit.and_then(|l| l.as_str()).unwrap_or(""),
+            }),
+        })
+        .collect();
+    let date = csl
+        .pointer("/issued/date-parts/0")
+        .and_then(|p| p.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|p| !p.is_null())
+                .map(|p| match p {
+                    Value::String(s) => s.clone(),
+                    _ => p.to_string(),
+                })
+                .enumerate()
+                .map(|(i, s)| if i == 0 { s } else { format!("{s:0>2}") })
+                .collect::<Vec<_>>()
+                .join("-")
+        })
+        .unwrap_or_default();
+    let mut item = serde_json::json!({
+        "itemType": item_type,
+        "title": strip_tags(&title),
+        "creators": creators,
+        "date": date,
+        "DOI": doi,
+        "url": csl_str(csl, "URL").unwrap_or_default(),
+    });
+    for (field, key) in venue {
+        if item.get(field).is_none() {
+            if let Some(v) = csl_str(csl, key) {
+                item[*field] = Value::String(v);
+            }
+        }
+    }
+    Ok(item)
 }
 
 fn pluralise(s: &str) -> &str {
@@ -578,6 +735,113 @@ mod tests {
         assert_eq!(parsed.id, 42);
         let back = serde_json::to_value(parsed).unwrap();
         assert_eq!(back, serde_json::json!({"type": "group", "id": 42}));
+    }
+
+    #[test]
+    fn items_url_is_library_scoped() {
+        let c = test_client("user", Some(123));
+        assert!(c.items_url().contains("/users/123/items"));
+    }
+
+    #[test]
+    fn normalize_doi_strips_prefixes() {
+        assert_eq!(normalize_doi(" https://doi.org/10.1/X "), "10.1/X");
+        assert_eq!(normalize_doi("doi:10.1/X"), "10.1/X");
+        assert_eq!(normalize_doi("10.1/X"), "10.1/X");
+    }
+
+    #[test]
+    fn csl_crossref_journal_article() {
+        let csl = serde_json::json!({
+            "type": "journal-article",
+            "title": "RAPTOR: Robust and Perception-Aware Trajectory Replanning for Quadrotor Fast Flight",
+            "author": [{"given": "Boyu", "family": "Zhou"}, {"given": "Jie", "family": "Pan"}],
+            "container-title": "IEEE Transactions on Robotics",
+            "issued": {"date-parts": [[2021, 12]]},
+            "volume": "37", "issue": "6", "page": "1992-2009",
+            "DOI": "10.1109/tro.2021.3071527",
+            "URL": "http://dx.doi.org/10.1109/TRO.2021.3071527"
+        });
+        let z = csl_to_zotero(&csl, "10.1109/TRO.2021.3071527").unwrap();
+        assert_eq!(z["itemType"], "journalArticle");
+        assert_eq!(z["publicationTitle"], "IEEE Transactions on Robotics");
+        assert_eq!(z["date"], "2021-12");
+        assert_eq!(z["pages"], "1992-2009");
+        assert_eq!(z["issue"], "6");
+        assert_eq!(z["DOI"], "10.1109/TRO.2021.3071527");
+        assert_eq!(z["creators"][0]["lastName"], "Zhou");
+        assert_eq!(z["creators"][0]["firstName"], "Boyu");
+        assert_eq!(z["creators"][0]["creatorType"], "author");
+    }
+
+    #[test]
+    fn csl_crossref_proceedings_article() {
+        let csl = serde_json::json!({
+            "type": "proceedings-article",
+            "title": "Fast Frontier-based Information-driven Autonomous Exploration with an MAV",
+            "author": [{"given": "Anna", "family": "Dai"}],
+            "event": "2020 IEEE International Conference on Robotics and Automation (ICRA)",
+            "container-title": "2020 IEEE International Conference on Robotics and Automation (ICRA)",
+            "issued": {"date-parts": [[2020, 5]]},
+            "page": "9570-9576", "publisher": "IEEE"
+        });
+        let z = csl_to_zotero(&csl, "10.1109/ICRA40945.2020.9196707").unwrap();
+        assert_eq!(z["itemType"], "conferencePaper");
+        assert!(z["proceedingsTitle"].as_str().unwrap().contains("ICRA"));
+        assert!(z["conferenceName"].as_str().unwrap().contains("ICRA"));
+        assert_eq!(z["date"], "2020-05");
+        assert!(z.get("publicationTitle").is_none());
+        assert!(z.get("issue").is_none());
+    }
+
+    #[test]
+    fn csl_datacite_arxiv_preprint() {
+        let csl = serde_json::json!({
+            "type": "article",
+            "title": "FU-MPC",
+            "author": [{"family": "Li", "given": "Jianping"}],
+            "issued": {"date-parts": [[2026]]},
+            "publisher": "arXiv",
+            "URL": "https://arxiv.org/abs/2605.14920"
+        });
+        let z = csl_to_zotero(&csl, "10.48550/arXiv.2605.14920").unwrap();
+        assert_eq!(z["itemType"], "preprint");
+        assert_eq!(z["repository"], "arXiv");
+        assert_eq!(z["date"], "2026");
+        assert_eq!(z["url"], "https://arxiv.org/abs/2605.14920");
+        assert!(z.get("pages").is_none());
+    }
+
+    #[test]
+    fn csl_spec_type_names_and_quirks() {
+        let csl = serde_json::json!({
+            "type": "paper-conference",
+            "title": ["A <i>tagged</i> title"],
+            "author": [{"literal": "ACME Consortium"}],
+            "event": {"name": "RSS"},
+            "issued": {"date-parts": [["2018", "6", "26"]]}
+        });
+        let z = csl_to_zotero(&csl, "10.1/x").unwrap();
+        assert_eq!(z["itemType"], "conferencePaper");
+        assert_eq!(z["title"], "A tagged title");
+        assert_eq!(z["creators"][0]["name"], "ACME Consortium");
+        assert_eq!(z["conferenceName"], "RSS");
+        assert_eq!(z["date"], "2018-06-26");
+        let undated = serde_json::json!({"title": "T", "issued": {"date-parts": [[null]]}});
+        assert_eq!(csl_to_zotero(&undated, "10.1/u").unwrap()["date"], "");
+        let journal = serde_json::json!({"type": "article-journal", "title": "T"});
+        assert_eq!(
+            csl_to_zotero(&journal, "10.1/y").unwrap()["itemType"],
+            "journalArticle"
+        );
+        assert!(csl_to_zotero(&serde_json::json!({"type": "article"}), "10.1/z").is_err());
+    }
+
+    #[test]
+    #[ignore = "hits doi.org"]
+    fn resolve_doi_live() {
+        let csl = resolve_doi("10.1109/TRO.2021.3071527").unwrap();
+        assert_eq!(csl["type"], "journal-article");
     }
 
     #[test]

@@ -763,7 +763,7 @@ impl ZoteroServer {
     }
 
     #[tool(
-        description = "Add a new journalArticle to the library by DOI. The Zotero connector resolves the DOI and fills in metadata."
+        description = "Add an item to the library by DOI. Metadata (title, authors, date, venue) is resolved via doi.org (Crossref / DataCite) and sets the item type (journalArticle, conferencePaper, preprint). If the library already has the DOI, returns that item instead. Returns {key, created}. Needs a writable backend (web API with a write-enabled key)."
     )]
     async fn add_doi(
         &self,
