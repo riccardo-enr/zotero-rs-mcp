@@ -7,6 +7,9 @@ use crate::types::{FullText, ZoteroCollection, ZoteroItem, ZoteroSearch};
 
 const API_VERSION: &str = "3";
 const TRANSLATOR_URL: &str = "http://localhost:1969/web";
+const CROSSREF_URL: &str = "https://api.crossref.org";
+const DATACITE_URL: &str = "https://api.datacite.org";
+const DOI_URL: &str = "https://doi.org";
 
 /* ZoteroClient wraps the Zotero local connector API (localhost:23119/api).
 Uses a synchronous HTTP client (minreq) — each CLI invocation makes exactly
@@ -19,6 +22,17 @@ pub struct ZoteroClient {
     api_key: Option<String>,
     user_id: Option<u64>,
     library_type: String,
+    crossref_base: String,
+    datacite_base: String,
+    doi_base: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct TitleCandidate {
+    doi: String,
+    title: String,
+    year: Option<i64>,
+    source: &'static str,
 }
 
 /* Per-call override for which Zotero library a tool targets. Mirrors the
@@ -58,6 +72,9 @@ impl ZoteroClient {
             api_key: cfg.api_key.clone(),
             user_id: cfg.user_id,
             library_type: cfg.library_type.clone(),
+            crossref_base: CROSSREF_URL.into(),
+            datacite_base: DATACITE_URL.into(),
+            doi_base: DOI_URL.into(),
         })
     }
 
@@ -469,7 +486,7 @@ impl ZoteroClient {
     metadata comes from doi.org content negotiation (Crossref / DataCite). */
     pub fn add_doi(&self, doi: &str) -> Result<Value> {
         let doi = normalize_doi(doi);
-        let item = csl_to_zotero(&resolve_doi(doi)?, doi)?;
+        let item = csl_to_zotero(&resolve_doi(&self.doi_base, doi)?, doi)?;
         let title = item["title"].as_str().unwrap_or_default();
         // ponytail: q= never matches the DOI field, so dedup misses items whose stored title differs
         let existing = self.search(&strip_tags(title), 25)?.into_iter().find(|i| {
@@ -491,6 +508,89 @@ impl ZoteroClient {
             .and_then(|k| k.as_str())
             .ok_or_else(|| anyhow::anyhow!("Zotero response missing successful[0]: {body}"))?;
         Ok(serde_json::json!({"key": key, "created": true}))
+    }
+
+    /* Imports only on an exact normalized-title match; a wrong guess would
+    put a bad item in the library, a candidate list costs one more step. */
+    pub fn add_title(&self, title: &str, open_browser: bool) -> Result<Value> {
+        let cands = self.title_candidates(title)?;
+        if let Some(hit) = pick_exact(title, &cands) {
+            let mut v = self.add_doi(&hit.doi)?;
+            v["matched"] = true.into();
+            v["doi"] = hit.doi.clone().into();
+            return Ok(v);
+        }
+        let search_url = format!("https://scholar.google.com/scholar?q={}", encode(title));
+        let opened = open_browser && open_url(&search_url);
+        Ok(serde_json::json!({
+            "matched": false,
+            "candidates": cands,
+            "search_url": search_url,
+            "opened": opened,
+        }))
+    }
+
+    fn title_candidates(&self, title: &str) -> Result<Vec<TitleCandidate>> {
+        let cr = self
+            .fetch_registry(
+                &format!(
+                    "{}/works?query.bibliographic={}&rows=5&select=DOI,title,issued",
+                    self.crossref_base,
+                    encode(title)
+                ),
+                true,
+            )
+            .map(|v| parse_crossref(&v));
+        let phrase = title.replace(['"', '\\'], "");
+        let dc = self
+            .fetch_registry(
+                &format!(
+                    "{}/dois?query={}&page%5Bsize%5D=5",
+                    self.datacite_base,
+                    encode(&format!("titles.title:\"{phrase}\""))
+                ),
+                false,
+            )
+            .map(|v| parse_datacite(&v));
+        match (cr, dc) {
+            (Err(a), Err(b)) => {
+                anyhow::bail!("title lookup failed: crossref: {a:#}; datacite: {b:#}")
+            }
+            (cr, dc) => {
+                let mut out = Vec::new();
+                for (name, r) in [("crossref", cr), ("datacite", dc)] {
+                    match r {
+                        Ok(c) => out.extend(c),
+                        Err(e) => tracing::warn!("{name} title lookup failed: {e:#}"),
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /* No Zotero-API-Key here: these hosts are not Zotero. */
+    fn fetch_registry(&self, url: &str, crossref: bool) -> Result<Value> {
+        let mut req = minreq::get(url).with_timeout(30);
+        if crossref {
+            let mailto = std::env::var("ZOTERO_CROSSREF_MAILTO")
+                .ok()
+                .filter(|m| !m.is_empty())
+                .map(|m| format!("; mailto:{m}"))
+                .unwrap_or_default();
+            req = req.with_header(
+                "User-Agent",
+                format!(
+                    "zotero-mcp/{} (https://github.com/riccardo-enr/zotero-rs-mcp{mailto})",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
+        }
+        let resp = req.send().context("sending request")?;
+        if resp.status_code >= 400 {
+            anyhow::bail!("HTTP {}", resp.status_code);
+        }
+        serde_json::from_str(resp.as_str()?).context("parsing registry response")
     }
 
     pub fn add_url(&self, add_url: &str) -> Result<Value> {
@@ -566,8 +666,8 @@ fn strip_tags(s: &str) -> String {
 }
 
 /* No Zotero-API-Key here: the request goes to doi.org, not Zotero. */
-fn resolve_doi(doi: &str) -> Result<Value> {
-    let resp = minreq::get(format!("https://doi.org/{doi}"))
+fn resolve_doi(base: &str, doi: &str) -> Result<Value> {
+    let resp = minreq::get(format!("{base}/{doi}"))
         .with_header("Accept", "application/vnd.citationstyles.csl+json")
         .with_timeout(30)
         .send()
@@ -577,6 +677,77 @@ fn resolve_doi(doi: &str) -> Result<Value> {
     }
     serde_json::from_str(resp.as_str()?)
         .with_context(|| format!("doi.org returned no CSL-JSON for {doi}"))
+}
+
+fn parse_crossref(v: &Value) -> Vec<TitleCandidate> {
+    let items = v.pointer("/message/items").and_then(|i| i.as_array());
+    items
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            Some(TitleCandidate {
+                doi: it.get("DOI")?.as_str()?.to_string(),
+                title: it.pointer("/title/0")?.as_str()?.to_string(),
+                year: it
+                    .pointer("/issued/date-parts/0/0")
+                    .and_then(|y| y.as_i64()),
+                source: "crossref",
+            })
+        })
+        .collect()
+}
+
+fn parse_datacite(v: &Value) -> Vec<TitleCandidate> {
+    let items = v.get("data").and_then(|d| d.as_array());
+    items
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            let a = it.get("attributes")?;
+            Some(TitleCandidate {
+                doi: a.get("doi")?.as_str()?.to_string(),
+                title: a.pointer("/titles/0/title")?.as_str()?.to_string(),
+                year: a.get("publicationYear").and_then(|y| y.as_i64()),
+                source: "datacite",
+            })
+        })
+        .collect()
+}
+
+fn normalize_title(s: &str) -> String {
+    let lower = strip_tags(s).to_lowercase();
+    let spaced: String = lower
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn pick_exact<'a>(query: &str, c: &'a [TitleCandidate]) -> Option<&'a TitleCandidate> {
+    let q = normalize_title(query);
+    let mut hits = c.iter().filter(|t| normalize_title(&t.title) == q);
+    let cr: Vec<_> = hits.clone().filter(|t| t.source == "crossref").collect();
+    match cr.split_first() {
+        Some((first, rest)) => rest
+            .iter()
+            .all(|t| t.doi.eq_ignore_ascii_case(&first.doi))
+            .then_some(*first),
+        None => hits.find(|t| t.source == "datacite"),
+    }
+}
+
+fn open_url(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(not(target_os = "macos"))]
+    let cmd = "xdg-open";
+    std::process::Command::new(cmd)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 /* CSL fields that are a string in some registries and an array in others. */
@@ -690,7 +861,186 @@ mod tests {
             api_key: None,
             user_id,
             library_type: library_type.into(),
+            crossref_base: CROSSREF_URL.into(),
+            datacite_base: DATACITE_URL.into(),
+            doi_base: DOI_URL.into(),
         }
+    }
+
+    const TITLE_A: &str =
+        "Information-Theoretic Model Predictive Control: Theory and Applications to Autonomous Driving";
+    const TITLE_B: &str =
+        "Information Theoretic Model Predictive Control: Theory and Applications to Autonomous Driving";
+
+    fn cand(doi: &str, title: &str, source: &'static str) -> TitleCandidate {
+        TitleCandidate {
+            doi: doi.into(),
+            title: title.into(),
+            year: Some(2018),
+            source,
+        }
+    }
+
+    #[test]
+    fn normalize_title_hyphen_and_tags() {
+        assert_eq!(normalize_title(TITLE_A), normalize_title(TITLE_B));
+        assert_eq!(
+            normalize_title("A  <i>Model</i>   Test"),
+            normalize_title("a model test")
+        );
+    }
+
+    #[test]
+    fn pick_exact_prefers_crossref() {
+        let cr = cand("10.1109/tro.2018.2865891", TITLE_A, "crossref");
+        let dc = cand("10.48550/arxiv.1707.02342", TITLE_B, "datacite");
+        let both = [dc.clone(), cr.clone()];
+        assert_eq!(pick_exact(TITLE_A, &both).unwrap().doi, cr.doi);
+        let only_dc = [dc.clone()];
+        assert_eq!(pick_exact(TITLE_A, &only_dc).unwrap().doi, dc.doi);
+        assert!(pick_exact(
+            "Information Theoretic Model Predictive Control: Theory",
+            &both
+        )
+        .is_none());
+        let two = [cr.clone(), cand("10.1109/other", TITLE_A, "crossref"), dc];
+        assert!(pick_exact(TITLE_A, &two).is_none());
+        let same = [
+            cr.clone(),
+            cand("10.1109/TRO.2018.2865891", TITLE_A, "crossref"),
+        ];
+        assert_eq!(pick_exact(TITLE_A, &same).unwrap().doi, cr.doi);
+    }
+
+    #[test]
+    fn parse_crossref_skips_bad_items() {
+        let v = serde_json::json!({"message": {"items": [
+            {"DOI": "10.1/a", "title": ["T"], "issued": {"date-parts": [[null]]}},
+            {"title": ["No doi"]},
+            {"DOI": "10.1/c", "title": []},
+        ]}});
+        let c = parse_crossref(&v);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].doi, "10.1/a");
+        assert_eq!(c[0].year, None);
+        assert_eq!(c[0].source, "crossref");
+        assert!(parse_crossref(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn parse_datacite_reads_fields() {
+        let v = serde_json::json!({"data": [
+            {"attributes": {"doi": "10.48550/arxiv.1", "titles": [{"title": "T"}], "publicationYear": 2017}},
+            {"attributes": {"doi": "10.1/x", "titles": []}},
+        ]});
+        let c = parse_datacite(&v);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].year, Some(2017));
+        assert_eq!(c[0].source, "datacite");
+    }
+
+    async fn mock_registries(s: &wiremock::MockServer, cr_title: &str, dc_title: &str) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(
+                {"message": {"items": [{"DOI": "10.1109/tro.2018.2865891",
+                  "title": [cr_title], "issued": {"date-parts": [[2018]]}}]}}
+            )))
+            .mount(s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/dois"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(
+                {"data": [{"attributes": {"doi": "10.48550/arxiv.1707.02342",
+                  "titles": [{"title": dc_title}], "publicationYear": 2017}}]}
+            )))
+            .mount(s)
+            .await;
+    }
+
+    fn mock_client(uri: &str) -> ZoteroClient {
+        let mut c = test_client("user", None);
+        c.base = uri.into();
+        c.crossref_base = uri.into();
+        c.datacite_base = uri.into();
+        c.doi_base = uri.into();
+        c
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_title_exact_match_imports() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        mock_registries(&s, TITLE_A, TITLE_B).await;
+        Mock::given(method("GET"))
+            .and(path("/10.1109/tro.2018.2865891"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(
+                {"type": "journal-article", "title": TITLE_A, "DOI": "10.1109/tro.2018.2865891"}
+            )))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/users/0/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(
+                {"successful": {"0": {"key": "ABCD1234"}}, "failed": {}}
+            )))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let c = mock_client(&s.uri());
+        let v = tokio::task::spawn_blocking(move || c.add_title(TITLE_A, false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(v["matched"], true);
+        assert_eq!(v["created"], true);
+        assert_eq!(v["key"], "ABCD1234");
+        assert_eq!(v["doi"], "10.1109/tro.2018.2865891");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_title_no_match_returns_candidates() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        mock_registries(&s, "Something Else Entirely", "Another Unrelated Paper").await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&s)
+            .await;
+        let c = mock_client(&s.uri());
+        let v = tokio::task::spawn_blocking(move || c.add_title(TITLE_A, false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(v["matched"], false);
+        assert_eq!(v["opened"], false);
+        let cands = v["candidates"].as_array().unwrap();
+        assert_eq!(cands.len(), 2);
+        assert!(cands.iter().all(|c| c["source"].is_string()));
+        assert!(v["search_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://scholar.google.com/scholar?q="));
+    }
+
+    #[test]
+    #[ignore = "hits Crossref and DataCite"]
+    fn title_candidates_live() {
+        let c = test_client("user", None);
+        let cands = c.title_candidates(TITLE_A).unwrap();
+        let hit = pick_exact(TITLE_A, &cands).expect("exact match");
+        assert!(hit.doi.eq_ignore_ascii_case("10.1109/TRO.2018.2865891"));
     }
 
     #[test]
@@ -840,7 +1190,7 @@ mod tests {
     #[test]
     #[ignore = "hits doi.org"]
     fn resolve_doi_live() {
-        let csl = resolve_doi("10.1109/TRO.2021.3071527").unwrap();
+        let csl = resolve_doi(DOI_URL, "10.1109/TRO.2021.3071527").unwrap();
         assert_eq!(csl["type"], "journal-article");
     }
 

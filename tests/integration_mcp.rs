@@ -154,7 +154,7 @@ async fn mcp_tools_list_and_recent_against_recorded_fixture() {
         .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
         .collect();
 
-    for required in ["search", "recent", "get", "children"] {
+    for required in ["search", "recent", "get", "children", "add_title"] {
         assert!(
             names.contains(&required),
             "tools/list missing {required}; got {names:?}"

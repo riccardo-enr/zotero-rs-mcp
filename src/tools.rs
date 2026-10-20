@@ -93,6 +93,18 @@ pub struct DoiArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TitleArgs {
+    /// Paper title as the user gives it
+    pub title: String,
+    /// Open a Google Scholar search in the browser when no title matches exactly (default true)
+    #[serde(default = "default_true")]
+    pub open_browser: bool,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct UrlArgs {
     /// Web URL of the resource to import (paper page, arxiv abs, etc.)
     pub url: String,
@@ -776,6 +788,19 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "Add an item to the library by paper title. Searches Crossref and DataCite; imports through add_doi only when exactly one DOI has a title equal to the query after normalization (case, punctuation and tags ignored). Otherwise imports nothing and returns {matched: false, candidates, search_url, opened}; with open_browser=true (default) the Google Scholar search_url is opened in the browser. On a match returns {key, created, matched, doi}. Needs a writable backend (web API with a write-enabled key)."
+    )]
+    async fn add_title(
+        &self,
+        Parameters(a): Parameters<TitleArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let v = blocking(move || client.add_title(&a.title, a.open_browser)).await?;
+        ok_json(&v)
+    }
+
+    #[tool(
         description = "Add a new item to the library by URL via the Zotero translator service (requires the local translator on port 1969)."
     )]
     async fn add_url(
@@ -1102,7 +1127,7 @@ impl ServerHandler for ZoteroServer {
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path, fulltext, \
              export_citation, render_citation, saved_searches, run_saved_search, \
-             annotations, notes. Mutating tools: add_doi, add_url, merge_items, \
+             annotations, notes. Mutating tools: add_doi, add_title, add_url, merge_items, \
              add_to_collection, remove_from_collection, set_tags, create_collection, delete_collection, \
              trash_list, restore, empty_trash. \
              Resources: zotero://recent (recently added), \
