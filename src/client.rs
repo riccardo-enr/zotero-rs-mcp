@@ -780,7 +780,25 @@ fn csl_to_zotero(csl: &Value, doi: &str) -> Result<Value> {
                 ],
             ),
             "article" | "posted-content" => ("preprint", &[("repository", "publisher")]),
-            // ponytail: books, chapters, datasets land as journalArticle -- add types when one shows up
+            "book" | "monograph" | "edited-book" => (
+                "book",
+                &[
+                    ("publisher", "publisher"),
+                    ("place", "publisher-place"),
+                    ("ISBN", "ISBN"),
+                ],
+            ),
+            "chapter" | "book-chapter" => (
+                "bookSection",
+                &[
+                    ("bookTitle", "container-title"),
+                    ("publisher", "publisher"),
+                    ("place", "publisher-place"),
+                    ("pages", "page"),
+                    ("ISBN", "ISBN"),
+                ],
+            ),
+            // ponytail: datasets, reports, theses, standards still land as journalArticle -- add types when one shows up
             _ => (
                 "journalArticle",
                 &[
@@ -1185,6 +1203,87 @@ mod tests {
             "journalArticle"
         );
         assert!(csl_to_zotero(&serde_json::json!({"type": "article"}), "10.1/z").is_err());
+    }
+
+    #[test]
+    fn csl_crossref_book() {
+        let csl = serde_json::json!({
+            "type": "monograph",
+            "title": "Liquid Sloshing Dynamics",
+            "author": [{"given": "Raouf A.", "family": "Ibrahim"}],
+            "publisher": "Cambridge University Press",
+            "ISBN": ["9780521838856", "9780511536656"],
+            "container-title": [],
+            "issued": {"date-parts": [[2005, 5, 19]]},
+            "URL": "http://dx.doi.org/10.1017/CBO9780511536656"
+        });
+        let z = csl_to_zotero(&csl, "10.1017/CBO9780511536656").unwrap();
+        assert_eq!(z["itemType"], "book");
+        assert_eq!(z["publisher"], "Cambridge University Press");
+        assert_eq!(z["ISBN"], "9780521838856");
+        assert_eq!(z["date"], "2005-05-19");
+        assert_eq!(z["creators"][0]["lastName"], "Ibrahim");
+        for f in [
+            "publicationTitle",
+            "volume",
+            "issue",
+            "pages",
+            "numPages",
+            "place",
+        ] {
+            assert!(z.get(f).is_none(), "{f}");
+        }
+    }
+
+    #[test]
+    fn csl_crossref_book_chapter() {
+        let csl = serde_json::json!({
+            "type": "book-chapter",
+            "title": "Introduction",
+            "container-title": "Liquid Sloshing Dynamics",
+            "page": "xvi-xxii",
+            "publisher": "Cambridge University Press",
+            "ISBN": ["9780521838856", "9780511536656"],
+            "issued": {"date-parts": [[2005, 5, 19]]}
+        });
+        let z = csl_to_zotero(&csl, "10.1017/cbo9780511536656.002").unwrap();
+        assert_eq!(z["itemType"], "bookSection");
+        assert_eq!(z["bookTitle"], "Liquid Sloshing Dynamics");
+        assert_eq!(z["pages"], "xvi-xxii");
+        assert_eq!(z["ISBN"], "9780521838856");
+        assert_eq!(z["publisher"], "Cambridge University Press");
+        assert_eq!(z["creators"], serde_json::json!([]));
+        assert!(z.get("publicationTitle").is_none());
+        assert!(z.get("issue").is_none());
+    }
+
+    #[test]
+    fn csl_spec_book_type_names() {
+        let item = |t: &str| {
+            let csl = serde_json::json!({"type": t, "title": "T", "publisher-place": "Cambridge"});
+            csl_to_zotero(&csl, "10.1/b").unwrap()
+        };
+        for t in ["book", "edited-book"] {
+            let z = item(t);
+            assert_eq!(z["itemType"], "book");
+            assert_eq!(z["place"], "Cambridge");
+        }
+        let z = item("chapter");
+        assert_eq!(z["itemType"], "bookSection");
+        assert_eq!(z["place"], "Cambridge");
+    }
+
+    #[test]
+    #[ignore = "hits doi.org"]
+    fn resolve_doi_book_live() {
+        let book = resolve_doi(DOI_URL, "10.1017/CBO9780511536656").unwrap();
+        assert_eq!(book["type"], "monograph");
+        let z = csl_to_zotero(&book, "10.1017/CBO9780511536656").unwrap();
+        assert_eq!(z["itemType"], "book");
+        let chap = resolve_doi(DOI_URL, "10.1017/cbo9780511536656.002").unwrap();
+        assert_eq!(chap["type"], "book-chapter");
+        let z = csl_to_zotero(&chap, "10.1017/cbo9780511536656.002").unwrap();
+        assert_eq!(z["itemType"], "bookSection");
     }
 
     #[test]
