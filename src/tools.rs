@@ -936,6 +936,21 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "Move a single item to the trash (PATCH deleted=1). Reversible with restore until empty_trash. Returns { key, trashed: true }."
+    )]
+    async fn trash(&self, Parameters(a): Parameters<KeyArgs>) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let key = a.key.clone();
+        blocking(move || {
+            let item = client.get(&a.key)?;
+            client.trash_item(&a.key, item.version)
+        })
+        .await?;
+        ok_json(&serde_json::json!({ "key": key, "trashed": true }))
+    }
+
+    #[tool(
         description = "Restore a single item from the trash (PATCH deleted=0). Returns { key, restored: true } on success."
     )]
     async fn restore(
@@ -1129,7 +1144,7 @@ impl ServerHandler for ZoteroServer {
              export_citation, render_citation, saved_searches, run_saved_search, \
              annotations, notes. Mutating tools: add_doi, add_title, add_url, merge_items, \
              add_to_collection, remove_from_collection, set_tags, create_collection, delete_collection, \
-             trash_list, restore, empty_trash. \
+             trash_list, trash, restore, empty_trash. \
              Resources: zotero://recent (recently added), \
              zotero://item/<key> (full metadata), \
              zotero://item/<key>/fulltext (indexed text). \

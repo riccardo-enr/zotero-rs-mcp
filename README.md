@@ -47,6 +47,7 @@ cargo install --path .
 | `add_title`       | Add by paper title via Crossref/DataCite; imports only an exact title match, else returns candidates and a Scholar URL (set `ZOTERO_CROSSREF_MAILTO` to join Crossref's polite pool) |
 | `add_url`         | Add via Zotero translator (requires translator on port 1969)     |
 | `merge_items`     | Merge two top-level items; supports `dry_run` and `keep`         |
+| `trash`           | Move one item to the trash (reversible with `restore`)          |
 
 ## Configuration
 

@@ -1061,6 +1061,26 @@ mod tests {
         assert!(hit.doi.eq_ignore_ascii_case("10.1109/TRO.2018.2865891"));
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn trash_patches_deleted_1() {
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/users/0/items/ABC12DEF"))
+            .and(header("If-Unmodified-Since-Version", "7"))
+            .and(body_json(serde_json::json!({"deleted": 1})))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let c = mock_client(&s.uri());
+        tokio::task::spawn_blocking(move || c.trash_item("ABC12DEF", 7))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
     #[test]
     fn lib_path_default_is_local_user() {
         let c = test_client("user", None);
