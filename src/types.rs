@@ -38,10 +38,15 @@ so they round-trip through serialization without data loss. */
 #[serde(rename_all = "camelCase")]
 pub struct ItemData {
     pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub item_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub abstract_note: Option<String>,
     #[serde(default)]
     pub creators: Vec<Creator>,
@@ -51,19 +56,22 @@ pub struct ItemData {
     pub collections: Vec<String>,
     #[serde(rename = "DOI", skip_serializing_if = "Option::is_none")]
     pub doi: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+/* Zotero treats a null field as set: "name": null beside firstName is a 400. */
 pub struct Creator {
-    #[serde(rename = "creatorType")]
+    #[serde(rename = "creatorType", skip_serializing_if = "Option::is_none")]
     pub creator_type: Option<String>,
-    #[serde(rename = "firstName")]
+    #[serde(rename = "firstName", skip_serializing_if = "Option::is_none")]
     pub first_name: Option<String>,
-    #[serde(rename = "lastName")]
+    #[serde(rename = "lastName", skip_serializing_if = "Option::is_none")]
     pub last_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
@@ -182,6 +190,29 @@ pub struct FullText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creator_omits_none_fields() {
+        let two = Creator {
+            creator_type: Some("author".into()),
+            first_name: Some("Alan".into()),
+            last_name: Some("Turing".into()),
+            name: None,
+        };
+        let v = serde_json::to_value(&two).unwrap();
+        assert!(v.get("name").is_none(), "{v}");
+        let one = Creator {
+            creator_type: Some("author".into()),
+            first_name: None,
+            last_name: None,
+            name: Some("IEEE".into()),
+        };
+        let v = serde_json::to_value(&one).unwrap();
+        assert!(
+            v.get("firstName").is_none() && v.get("lastName").is_none(),
+            "{v}"
+        );
+    }
 
     /* ---- Creator::display_name ---- */
 

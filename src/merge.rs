@@ -336,5 +336,19 @@ mod tests {
         let creators = merged["creators"].as_array().unwrap();
         assert_eq!(creators.len(), 1);
         assert_eq!(creators[0]["lastName"], "Smith");
+        assert!(creators[0].get("name").is_none(), "{}", creators[0]);
+    }
+
+    #[test]
+    fn merged_body_has_no_nulls() {
+        let merged = reconcile_items(&make_item("T1"), &make_item("S1"));
+        let nulls: Vec<_> = merged
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, v)| v.is_null())
+            .map(|(k, _)| k)
+            .collect();
+        assert!(nulls.is_empty(), "null fields in PATCH body: {nulls:?}");
     }
 }
