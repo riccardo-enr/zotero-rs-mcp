@@ -105,6 +105,17 @@ pub struct TitleArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AttachPdfArgs {
+    /// Zotero key of the parent item that gets the PDF
+    pub key: String,
+    /// Absolute path of a local PDF file
+    pub path: String,
+    /// Optional per-call library override.
+    #[serde(default)]
+    pub library: Option<LibraryRef>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct UrlArgs {
     /// Web URL of the resource to import (paper page, arxiv abs, etc.)
     pub url: String,
@@ -814,6 +825,19 @@ impl ZoteroServer {
     }
 
     #[tool(
+        description = "Attach a local PDF file to an existing item as a stored child attachment (Zotero web API file upload). Returns { parent, attachment }."
+    )]
+    async fn attach_pdf(
+        &self,
+        Parameters(a): Parameters<AttachPdfArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let inner = self.inner.clone();
+        let client = pick_client(&inner.client, a.library);
+        let v = blocking(move || client.attach_pdf(&a.key, std::path::Path::new(&a.path))).await?;
+        ok_json(&v)
+    }
+
+    #[tool(
         description = "Merge two top-level items: union tags and collections, fill empty fields on the target from the source, re-parent the source's children, and trash the source. Set dry_run=true to preview without writing. Use 'keep' to choose which key survives (defaults to key1)."
     )]
     async fn merge_items(
@@ -1142,7 +1166,7 @@ impl ServerHandler for ZoteroServer {
              http://localhost:23119/api. Read tools: search, get, recent, \
              children, collections, collection_items, tags, attachment_path, fulltext, \
              export_citation, render_citation, saved_searches, run_saved_search, \
-             annotations, notes. Mutating tools: add_doi, add_title, add_url, merge_items, \
+             annotations, notes. Mutating tools: add_doi, add_title, add_url, attach_pdf, merge_items, \
              add_to_collection, remove_from_collection, set_tags, create_collection, delete_collection, \
              trash_list, trash, restore, empty_trash. \
              Resources: zotero://recent (recently added), \

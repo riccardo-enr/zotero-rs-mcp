@@ -26,6 +26,7 @@ dirs = "5"
 minreq = { version = "2", features = ["json-using-serde", "https-rustls"] }
 urlencoding = "2"
 toml = "0.8"
+md5 = "0.8.1"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -1,3 +1,6 @@
+use std::path::Path;
+use std::time::UNIX_EPOCH;
+
 use anyhow::{Context, Result};
 use serde_json::Value;
 use urlencoding::encode;
@@ -499,14 +502,7 @@ impl ZoteroClient {
             return Ok(serde_json::json!({"key": i.key, "created": false}));
         }
         let body = self.post_json(&self.items_url(), &Value::Array(vec![item]))?;
-        let v: Value = serde_json::from_str(&body).context("parsing add doi response")?;
-        if let Some(f) = v.get("failed").and_then(|f| f.get("0")) {
-            anyhow::bail!("Zotero add_doi failed: {f}");
-        }
-        let key = v
-            .pointer("/successful/0/key")
-            .and_then(|k| k.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Zotero response missing successful[0]: {body}"))?;
+        let key = created_key(&body)?;
         Ok(serde_json::json!({"key": key, "created": true}))
     }
 
@@ -613,6 +609,117 @@ impl ZoteroClient {
         let resp_body = resp.as_str().context("reading response body")?;
         serde_json::from_str(resp_body).context("parsing add url response")
     }
+
+    /* Web API file upload: create the attachment item, get an upload
+    authorization, POST prefix + file + suffix to its URL, register it. */
+    pub fn attach_pdf(&self, parent: &str, path: &Path) -> Result<Value> {
+        let bytes = read_pdf(path)?;
+        let filename = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .context("PDF path has no file name")?;
+        let item = serde_json::json!([{
+            "itemType": "attachment",
+            "parentItem": parent,
+            "linkMode": "imported_file",
+            "title": "Full Text PDF",
+            "contentType": "application/pdf",
+            "filename": filename,
+        }]);
+        let key = created_key(&self.post_json(&self.items_url(), &item)?)?;
+        self.upload_file(&key, filename, &bytes, path)
+            .with_context(|| format!("upload failed; trash the empty attachment {key}"))?;
+        Ok(serde_json::json!({"parent": parent, "attachment": key}))
+    }
+
+    fn upload_file(&self, key: &str, filename: &str, bytes: &[u8], path: &Path) -> Result<()> {
+        let url = format!(
+            "{}{}/items/{key}/file?v={API_VERSION}",
+            self.base,
+            self.lib_path()
+        );
+        let mtime = std::fs::metadata(path)?
+            .modified()?
+            .duration_since(UNIX_EPOCH)?
+            .as_millis();
+        let form = format!(
+            "md5={:x}&filename={}&filesize={}&mtime={mtime}",
+            md5::compute(bytes),
+            encode(filename),
+            bytes.len()
+        );
+        let auth: Value = serde_json::from_str(&self.post_form(&url, &form)?)
+            .context("parsing upload authorization")?;
+        if auth.get("exists").is_some() {
+            return Ok(());
+        }
+        let field = |k: &str| {
+            auth[k]
+                .as_str()
+                .with_context(|| format!("upload authorization missing {k}: {auth}"))
+        };
+        let mut body = field("prefix")?.as_bytes().to_vec();
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(field("suffix")?.as_bytes());
+        let resp = minreq::post(field("url")?)
+            .with_header("Content-Type", field("contentType")?)
+            .with_body(body)
+            .with_timeout(120)
+            .send()
+            .context("uploading file")?;
+        if resp.status_code >= 400 {
+            anyhow::bail!(
+                "file storage error {}: {}",
+                resp.status_code,
+                resp.as_str().unwrap_or_default()
+            );
+        }
+        self.post_form(&url, &format!("upload={}", encode(field("uploadKey")?)))?;
+        Ok(())
+    }
+
+    /* If-None-Match: * declares the attachment has no file yet; Zotero answers 428 without it. */
+    fn post_form(&self, url: &str, form: &str) -> Result<String> {
+        let mut req = minreq::post(url)
+            .with_header("Content-Type", "application/x-www-form-urlencoded")
+            .with_header("If-None-Match", "*")
+            .with_body(form)
+            .with_timeout(30);
+        if let Some(key) = &self.api_key {
+            req = req.with_header("Zotero-API-Key", key);
+        }
+        let resp = req.send().context("sending request")?;
+        if resp.status_code >= 400 {
+            anyhow::bail!(
+                "Zotero API error {}: {}",
+                resp.status_code,
+                resp.as_str().unwrap_or_default()
+            );
+        }
+        Ok(resp.as_str().context("reading response body")?.to_string())
+    }
+}
+
+fn created_key(body: &str) -> Result<String> {
+    let v: Value = serde_json::from_str(body).context("parsing create item response")?;
+    if let Some(f) = v.get("failed").and_then(|f| f.get("0")) {
+        anyhow::bail!("Zotero create item failed: {f}");
+    }
+    v.pointer("/successful/0/key")
+        .and_then(|k| k.as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("Zotero response missing successful[0]: {body}"))
+}
+
+fn read_pdf(path: &Path) -> Result<Vec<u8>> {
+    if !path.is_file() {
+        anyhow::bail!("not a file: {}", path.display());
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    if !bytes.starts_with(b"%PDF") {
+        anyhow::bail!("not a PDF (no %PDF header): {}", path.display());
+    }
+    Ok(bytes)
 }
 
 /* Parse Zotero's write-response envelope for a single-create POST. The
@@ -1079,6 +1186,126 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    fn pdf_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let p = dir.path().join("paper.pdf");
+        std::fs::write(&p, b"%PDF-1.4 body").unwrap();
+        p
+    }
+
+    async fn mock_attach_create(s: &wiremock::MockServer) {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        Mock::given(method("POST"))
+            .and(path("/users/0/items"))
+            .and(body_partial_json(serde_json::json!([{
+                "itemType": "attachment",
+                "parentItem": "PARENT01",
+                "linkMode": "imported_file",
+                "contentType": "application/pdf",
+                "filename": "paper.pdf",
+            }])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"successful": {"0": {"key": "ATTACH01"}}, "failed": {}}),
+            ))
+            .expect(1)
+            .mount(s)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn attach_pdf_runs_upload_flow() {
+        use wiremock::matchers::{body_string, body_string_contains, header, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        mock_attach_create(&s).await;
+        let md5 = format!("{:x}", md5::compute(b"%PDF-1.4 body"));
+        Mock::given(method("POST"))
+            .and(path("/users/0/items/ATTACH01/file"))
+            .and(header("If-None-Match", "*"))
+            .and(body_string_contains(format!(
+                "md5={md5}&filename=paper.pdf&filesize=13&mtime="
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": format!("{}/upload", s.uri()),
+                "contentType": "multipart/form-data; boundary=B",
+                "prefix": "PRE",
+                "suffix": "SUF",
+                "uploadKey": "UK1",
+            })))
+            .expect(1)
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .and(header("Content-Type", "multipart/form-data; boundary=B"))
+            .and(body_string("PRE%PDF-1.4 bodySUF"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items/ATTACH01/file"))
+            .and(header("If-None-Match", "*"))
+            .and(body_string("upload=UK1"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let p = pdf_file(&dir);
+        let c = mock_client(&s.uri());
+        let v = tokio::task::spawn_blocking(move || c.attach_pdf("PARENT01", &p))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"parent": "PARENT01", "attachment": "ATTACH01"})
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_pdf_existing_file_skips_upload() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        mock_attach_create(&s).await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items/ATTACH01/file"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"exists": 1})),
+            )
+            .expect(1)
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let p = pdf_file(&dir);
+        let c = mock_client(&s.uri());
+        tokio::task::spawn_blocking(move || c.attach_pdf("PARENT01", &p))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn attach_pdf_rejects_bad_paths_before_http() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"hello").unwrap();
+        let c = test_client("user", None);
+        for p in [
+            dir.path().join("missing.pdf"),
+            dir.path().to_path_buf(),
+            txt,
+        ] {
+            let err = c.attach_pdf("PARENT01", &p).unwrap_err().to_string();
+            assert!(
+                err.starts_with("not a file") || err.starts_with("not a PDF"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

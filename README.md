@@ -46,6 +46,7 @@ cargo install --path .
 | `add_doi`         | Add an item by DOI (metadata via doi.org; skips duplicates)      |
 | `add_title`       | Add by paper title via Crossref/DataCite; imports only an exact title match, else returns candidates and a Scholar URL (set `ZOTERO_CROSSREF_MAILTO` to join Crossref's polite pool) |
 | `add_url`         | Add via Zotero translator (requires translator on port 1969)     |
+| `attach_pdf`      | Attach a local PDF to an existing item (web API file upload)     |
 | `merge_items`     | Merge two top-level items; supports `dry_run` and `keep`         |
 | `trash`           | Move one item to the trash (reversible with `restore`)          |
 
