@@ -13,6 +13,7 @@ const TRANSLATOR_URL: &str = "http://localhost:1969/web";
 const CROSSREF_URL: &str = "https://api.crossref.org";
 const DATACITE_URL: &str = "https://api.datacite.org";
 const DOI_URL: &str = "https://doi.org";
+const MAX_PDF_BYTES: u64 = 100 * 1024 * 1024;
 
 /* ZoteroClient wraps the Zotero local connector API (localhost:23119/api).
 Uses a synchronous HTTP client (minreq) — each CLI invocation makes exactly
@@ -627,8 +628,17 @@ impl ZoteroClient {
             "filename": filename,
         }]);
         let key = created_key(&self.post_json(&self.items_url(), &item)?)?;
-        self.upload_file(&key, filename, &bytes, path)
-            .with_context(|| format!("upload failed; trash the empty attachment {key}"))?;
+        if let Err(e) = self.upload_file(&key, filename, &bytes, path) {
+            let cleanup = self
+                .get(&key)
+                .and_then(|i| self.delete_item(&key, i.version));
+            return Err(match cleanup {
+                Ok(()) => e.context("upload failed; empty attachment deleted"),
+                Err(c) => e.context(format!(
+                    "upload failed; cleanup failed ({c:#}); empty attachment {key} left behind"
+                )),
+            });
+        }
         Ok(serde_json::json!({"parent": parent, "attachment": key}))
     }
 
@@ -714,6 +724,13 @@ fn created_key(body: &str) -> Result<String> {
 fn read_pdf(path: &Path) -> Result<Vec<u8>> {
     if !path.is_file() {
         anyhow::bail!("not a file: {}", path.display());
+    }
+    let size = std::fs::metadata(path)?.len();
+    if size > MAX_PDF_BYTES {
+        anyhow::bail!(
+            "PDF too large: {size} bytes (limit {MAX_PDF_BYTES}): {}",
+            path.display()
+        );
     }
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     if !bytes.starts_with(b"%PDF") {
@@ -1255,7 +1272,15 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         let p = pdf_file(&dir);
-        let c = mock_client(&s.uri());
+        let real_mtime = std::fs::metadata(&p)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let mut c = mock_client(&s.uri());
+        c.api_key = Some("k".into());
         let v = tokio::task::spawn_blocking(move || c.attach_pdf("PARENT01", &p))
             .await
             .unwrap()
@@ -1264,6 +1289,127 @@ mod tests {
             v,
             serde_json::json!({"parent": "PARENT01", "attachment": "ATTACH01"})
         );
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 4);
+        for r in &reqs {
+            let key = r.headers.get("Zotero-API-Key");
+            if r.url.path() == "/upload" {
+                assert!(key.is_none());
+            } else {
+                assert_eq!(key.unwrap().to_str().unwrap(), "k");
+            }
+        }
+        let auth = String::from_utf8(reqs[1].body.clone()).unwrap();
+        let mtime = auth.rsplit("mtime=").next().unwrap();
+        assert_eq!(mtime.len(), 13, "{mtime}");
+        assert!((mtime.parse::<i64>().unwrap() - real_mtime).abs() < 5000);
+    }
+
+    #[tokio::test]
+    async fn attach_pdf_percent_encodes_filename() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"successful": {"0": {"key": "ATTACH01"}}, "failed": {}}),
+            ))
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items/ATTACH01/file"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"exists": 1})),
+            )
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("M\u{fc}ller & Co + 1.pdf");
+        std::fs::write(&p, b"%PDF-1.4 body").unwrap();
+        let c = mock_client(&s.uri());
+        tokio::task::spawn_blocking(move || c.attach_pdf("PARENT01", &p))
+            .await
+            .unwrap()
+            .unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        let auth = String::from_utf8(reqs[1].body.clone()).unwrap();
+        assert!(
+            auth.contains("&filename=M%C3%BCller%20%26%20Co%20%2B%201.pdf&filesize=13&"),
+            "{auth}"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_pdf_upload_failure_deletes_attachment() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let s = wiremock::MockServer::start().await;
+        mock_attach_create(&s).await;
+        Mock::given(method("POST"))
+            .and(path("/users/0/items/ATTACH01/file"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": format!("{}/upload", s.uri()),
+                "contentType": "multipart/form-data; boundary=B",
+                "prefix": "PRE",
+                "suffix": "SUF",
+                "uploadKey": "UK1",
+            })))
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/users/0/items/ATTACH01"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"key": "ATTACH01", "version": 7, "data": {"key": "ATTACH01"}}),
+            ))
+            .mount(&s)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/users/0/items/ATTACH01"))
+            .and(header("If-Unmodified-Since-Version", "7"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let p = pdf_file(&dir);
+        let c = mock_client(&s.uri());
+        let err = tokio::task::spawn_blocking(move || c.attach_pdf("PARENT01", &p))
+            .await
+            .unwrap()
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("file storage error 500"), "{msg}");
+        assert!(msg.contains("deleted"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn attach_pdf_rejects_oversize_file_before_http() {
+        let s = wiremock::MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let p = pdf_file(&dir);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_len(MAX_PDF_BYTES + 1)
+            .unwrap();
+        let c = mock_client(&s.uri());
+        let err = tokio::task::spawn_blocking(move || c.attach_pdf("PARENT01", &p))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("too large") && err.contains("104857601"),
+            "{err}"
+        );
+        assert!(s.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
